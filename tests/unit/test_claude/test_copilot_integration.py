@@ -37,7 +37,7 @@ def manager(config):
 class TestBuildCommand:
     def test_new_session(self, manager):
         cmd = manager._build_command("hello", None, False, "gpt-5-mini")
-        assert cmd[0] == "copilot"
+        assert cmd[0].endswith("copilot")
         assert "-p" in cmd
         assert cmd[cmd.index("-p") + 1] == "hello"
         assert "--allow-all" in cmd
