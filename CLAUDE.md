@@ -133,3 +133,32 @@ Agentic mode commands: `/start`, `/new`, `/status`, `/verbose`, `/repo`. If `ENA
 2. Register in `MessageOrchestrator._register_classic_handlers()`
 3. Add to `MessageOrchestrator.get_bot_commands()` for Telegram's command menu
 4. Add audit logging for the command
+
+## Fork & Upstream Workflow
+
+This repo is a **personal fork** of [RichardAtCT/claude-code-telegram](https://github.com/RichardAtCT/claude-code-telegram).
+All custom features (e.g. Copilot integration) are layered **on top of** upstream via rebase — never via merge commits.
+
+### Rules for every code change
+
+1. **Never merge upstream** — always use `make sync` (which runs `git rebase -X theirs upstream/main`).
+2. **Keep custom commits atomic and self-contained** — each commit should be independently rebased without pulling in upstream internals.
+3. **When resolving rebase conflicts**, prefer keeping the local (feature) logic; only adopt upstream changes that don't conflict with existing features.
+4. **After any `make sync`**, verify with `make status` that your commits sit cleanly on top of `upstream/main`.
+5. **Push with `git push --force-with-lease`** — never plain `--force`.
+
+### Branch strategy
+
+```
+upstream/main  ──A──B──C──D (RichardAtCT releases)
+                            \
+origin/main                  feat1──feat2──feat3  (your commits, always rebased on top)
+```
+
+### Conflict resolution priority
+
+| File / area | Resolution |
+|---|---|
+| upstream-only new files | auto-accepted via `-X theirs` |
+| Your feature files (e.g. `copilot_*.py`) | always keep your version |
+| Shared files (e.g. `facade.py`, `settings.py`) | manually merge: keep your logic, adopt upstream API changes |
