@@ -145,7 +145,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
     )
 
     # Create Claude SDK manager and integration facade
-    logger.info("Using Claude Python SDK integration")
+    logger.info("Initializing AI integration", provider=config.default_provider)
     sdk_manager = ClaudeSDKManager(config)
 
     claude_integration = ClaudeIntegration(
