@@ -306,6 +306,7 @@ class ClaudeIntegration:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
+        provider: Optional[ProviderType] = None,
     ) -> ClaudeResponse:
         """Execute command using Copilot SDK (with CLI fallback)."""
         logger.info(
@@ -347,6 +348,7 @@ class ClaudeIntegration:
             error_type=copilot_response.error_type,
             tools_used=copilot_response.tools_used,
         )
+
 
     async def _find_resumable_session(
         self,
