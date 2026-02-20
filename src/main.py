@@ -148,6 +148,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         config=config,
         sdk_manager=sdk_manager,
         session_manager=session_manager,
+        default_provider=config.default_provider,
     )
 
     # --- Event bus and agentic platform components ---
