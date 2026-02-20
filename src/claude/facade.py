@@ -4,7 +4,7 @@ Provides simple interface for bot handlers.
 """
 
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 import structlog
 
@@ -12,24 +12,32 @@ from ..config.settings import Settings
 from .exceptions import ClaudeToolValidationError
 from .monitor import ToolMonitor
 from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
+from .copilot_integration import CopilotProcessManager
 from .session import SessionManager
 
 logger = structlog.get_logger()
 
+# Provider type
+ProviderType = Literal["claude", "copilot"]
+
 
 class ClaudeIntegration:
-    """Main integration point for Claude Code."""
+    """Main integration point for Claude Code / Copilot."""
 
     def __init__(
         self,
         config: Settings,
         sdk_manager: Optional[ClaudeSDKManager] = None,
+        copilot_manager: Optional[CopilotProcessManager] = None,
         session_manager: Optional[SessionManager] = None,
         tool_monitor: Optional[ToolMonitor] = None,
+        default_provider: ProviderType = "claude",
     ):
         """Initialize Claude integration facade."""
         self.config = config
+        self.default_provider = default_provider
         self.sdk_manager = sdk_manager or ClaudeSDKManager(config)
+        self.copilot_manager = copilot_manager or CopilotProcessManager(config)
         self.session_manager = session_manager
         self.tool_monitor = tool_monitor
 
@@ -41,15 +49,20 @@ class ClaudeIntegration:
         session_id: Optional[str] = None,
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
         force_new: bool = False,
+        provider: Optional[ProviderType] = None,
     ) -> ClaudeResponse:
-        """Run Claude Code command with full integration."""
+        """Run Claude Code or Copilot command with full integration."""
+        # Use specified provider or default
+        actual_provider = provider or self.default_provider
+        
         logger.info(
-            "Running Claude command",
+            f"Running {actual_provider} command",
             user_id=user_id,
             working_directory=str(working_directory),
             session_id=session_id,
             prompt_length=len(prompt),
             force_new=force_new,
+            provider=actual_provider,
         )
 
         # If no session_id provided, try to find an existing session for this
@@ -148,6 +161,7 @@ class ClaudeIntegration:
                     session_id=claude_session_id,
                     continue_session=should_continue,
                     stream_callback=stream_handler,
+                    provider=provider,
                 )
             except Exception as resume_error:
                 # If resume failed (e.g., session expired on Claude's side),
@@ -174,6 +188,7 @@ class ClaudeIntegration:
                         session_id=None,
                         continue_session=False,
                         stream_callback=stream_handler,
+                        provider=provider,
                     )
                 else:
                     raise
@@ -255,8 +270,20 @@ class ClaudeIntegration:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
+        provider: Optional[ProviderType] = None,
     ) -> ClaudeResponse:
-        """Execute command via SDK."""
+        """Execute command via SDK or Copilot."""
+        actual_provider = provider or self.default_provider
+
+        if actual_provider == "copilot":
+            return await self._execute_copilot(
+                prompt=prompt,
+                working_directory=working_directory,
+                session_id=session_id,
+                continue_session=continue_session,
+                stream_callback=stream_callback,
+            )
+
         return await self.sdk_manager.execute_command(
             prompt=prompt,
             working_directory=working_directory,
@@ -264,6 +291,48 @@ class ClaudeIntegration:
             continue_session=continue_session,
             stream_callback=stream_callback,
         )
+
+    async def _execute_copilot(
+        self,
+        prompt: str,
+        working_directory: Path,
+        session_id: Optional[str] = None,
+        continue_session: bool = False,
+        stream_callback: Optional[Callable] = None,
+    ) -> ClaudeResponse:
+        """Execute command using Copilot CLI."""
+        logger.info(
+            "Executing with Copilot",
+            working_directory=str(working_directory),
+            session_id=session_id,
+            continue_session=continue_session,
+        )
+
+        try:
+            # Execute via Copilot manager
+            copilot_response = await self.copilot_manager.execute_command(
+                prompt=prompt,
+                working_directory=working_directory,
+                session_id=session_id,
+                continue_session=continue_session,
+                stream_callback=stream_callback,
+            )
+
+            # Convert CopilotResponse to ClaudeResponse for compatibility
+            return ClaudeResponse(
+                content=copilot_response.content,
+                session_id=copilot_response.session_id,
+                cost=copilot_response.cost,
+                duration_ms=copilot_response.duration_ms,
+                num_turns=copilot_response.num_turns,
+                is_error=copilot_response.is_error,
+                error_type=copilot_response.error_type,
+                tools_used=copilot_response.tools_used,
+            )
+
+        except Exception as e:
+            logger.error("Copilot execution failed", error=str(e))
+            raise
 
     async def _find_resumable_session(
         self,
