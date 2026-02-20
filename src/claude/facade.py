@@ -140,8 +140,8 @@ class ClaudeIntegration:
                                 allowed_tools=self.config.claude_allowed_tools or [],
                             )
 
-            # Pass to caller's handler
-            if on_stream:
+            # Pass to caller's handler (only for Claude StreamUpdate, not Copilot)
+            if on_stream and isinstance(update, StreamUpdate):
                 try:
                     await on_stream(update)
                 except Exception as e:
