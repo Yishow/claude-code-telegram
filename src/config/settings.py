@@ -76,6 +76,17 @@ class Settings(BaseSettings):
     claude_model: str = Field(
         "claude-3-5-sonnet-20241022", description="Claude model to use"
     )
+
+    # Copilot settings
+    copilot_binary_path: Optional[str] = Field(
+        None, description="Path to Copilot CLI binary"
+    )
+    copilot_model: str = Field(
+        "gpt-5.3-codex", description="Copilot model to use"
+    )
+    default_provider: str = Field(
+        "claude", description="Default AI provider: claude or copilot"
+    )
     claude_max_turns: int = Field(
         DEFAULT_CLAUDE_MAX_TURNS, description="Max conversation turns"
     )
