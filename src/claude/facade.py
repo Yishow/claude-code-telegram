@@ -94,8 +94,8 @@ class ClaudeIntegration:
         async def stream_handler(update: StreamUpdate):
             nonlocal tools_validated
 
-            # Validate tool calls
-            if update.tool_calls:
+            # Validate tool calls (CopilotStreamUpdate has no tool_calls)
+            if getattr(update, "tool_calls", None):
                 for tool_call in update.tool_calls:
                     tool_name = tool_call["name"]
                     valid, error = await self.tool_monitor.validate_tool_call(
