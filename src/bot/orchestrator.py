@@ -329,6 +329,14 @@ class MessageOrchestrator:
             )
         )
 
+        # ask_user: inline button choices from Copilot mid-execution questions
+        app.add_handler(
+            CallbackQueryHandler(
+                self._inject_deps(self._ask_user_callback),
+                pattern=r"^ask_user:",
+            )
+        )
+
         logger.info("Agentic handlers registered")
 
     def _register_classic_handlers(self, app: Application) -> None:
@@ -645,18 +653,55 @@ class MessageOrchestrator:
         progress_msg: Any,
         tool_log: List[Dict[str, Any]],
         start_time: float,
+        context: Optional[ContextTypes.DEFAULT_TYPE] = None,
     ) -> Optional[Callable[[StreamUpdate], Any]]:
         """Create a stream callback for verbose progress updates.
 
         Returns None when verbose_level is 0 (nothing to display).
         Typing indicators are handled by a separate heartbeat task.
+        ``context`` is required for ask_user support regardless of verbose_level.
         """
-        if verbose_level == 0:
+        # If verbose_level is 0 but context is provided, we still need a callback
+        # to handle ask_user requests from the Copilot provider.
+        if verbose_level == 0 and context is None:
             return None
 
         last_edit_time = [0.0]  # mutable container for closure
 
         async def _on_stream(update_obj: StreamUpdate) -> None:
+            # --- ask_user: Copilot needs input from the user mid-execution ---
+            if update_obj.type == "ask_user" and context is not None:
+                meta = update_obj.metadata or {}
+                future = meta.get("future")
+                choices: List[str] = meta.get("choices") or []
+                question = update_obj.content or "Copilot needs more information:"
+
+                if future is not None and not future.done():
+                    # Store future so agentic_text can resolve it on next message
+                    context.user_data["pending_ask_user"] = future
+
+                    # Build inline keyboard for predefined choices (if any)
+                    reply_markup = None
+                    if choices:
+                        keyboard = [
+                            [InlineKeyboardButton(c, callback_data=f"ask_user:{c}")]
+                            for c in choices
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+
+                    try:
+                        await progress_msg.edit_text(
+                            f"❓ <b>Copilot asks:</b>\n{escape_html(question)}",
+                            parse_mode="HTML",
+                            reply_markup=reply_markup,
+                        )
+                    except Exception:
+                        pass
+                return
+
+            if verbose_level == 0:
+                return
+
             # Capture tool calls
             if update_obj.tool_calls:
                 for tc in update_obj.tool_calls:
@@ -693,6 +738,14 @@ class MessageOrchestrator:
         """Direct Claude passthrough. Simple progress. No suggestions."""
         user_id = update.effective_user.id
         message_text = update.message.text
+
+        # --- ask_user: resolve a pending Copilot question with this message ---
+        pending_future = context.user_data.get("pending_ask_user")
+        if pending_future is not None and not pending_future.done():
+            context.user_data.pop("pending_ask_user", None)
+            pending_future.set_result(message_text)
+            logger.info("Resolved pending ask_user future", user_id=user_id)
+            return
 
         logger.info(
             "Agentic text message",
@@ -734,7 +787,7 @@ class MessageOrchestrator:
         tool_log: List[Dict[str, Any]] = []
         start_time = time.time()
         on_stream = self._make_stream_callback(
-            verbose_level, progress_msg, tool_log, start_time
+            verbose_level, progress_msg, tool_log, start_time, context=context
         )
 
         # Independent typing heartbeat — stays alive even with no stream events
@@ -940,7 +993,7 @@ class MessageOrchestrator:
         verbose_level = self._get_verbose_level(context)
         tool_log: List[Dict[str, Any]] = []
         on_stream = self._make_stream_callback(
-            verbose_level, progress_msg, tool_log, time.time()
+            verbose_level, progress_msg, tool_log, time.time(), context=context
         )
 
         heartbeat = self._start_typing_heartbeat(chat)
@@ -1034,7 +1087,7 @@ class MessageOrchestrator:
             verbose_level = self._get_verbose_level(context)
             tool_log: List[Dict[str, Any]] = []
             on_stream = self._make_stream_callback(
-                verbose_level, progress_msg, tool_log, time.time()
+                verbose_level, progress_msg, tool_log, time.time(), context=context
             )
 
             heartbeat = self._start_typing_heartbeat(chat)
@@ -1177,6 +1230,31 @@ class MessageOrchestrator:
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
+
+    async def _ask_user_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle ask_user: inline button — resolve pending Copilot question."""
+        query = update.callback_query
+        await query.answer()
+
+        choice = (query.data or "").split(":", 1)[-1]
+        pending_future = context.user_data.get("pending_ask_user")
+
+        if pending_future is not None and not pending_future.done():
+            context.user_data.pop("pending_ask_user", None)
+            pending_future.set_result(choice)
+            logger.info(
+                "Resolved ask_user via inline choice",
+                user_id=update.effective_user.id,
+                choice=choice,
+            )
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+        else:
+            await query.answer("This question has already been answered.")
 
     async def _agentic_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE

@@ -12,7 +12,7 @@ Session lifecycle:
 import asyncio
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
 import structlog
 
@@ -38,9 +38,17 @@ class CopilotResponse:
 
 @dataclass
 class CopilotStreamUpdate:
-    """Streaming update from Copilot SDK."""
+    """Streaming update from Copilot SDK.
 
-    type: str  # 'result', 'error'
+    type values:
+      'result'   — assistant text chunk
+      'ask_user' — agent needs user input; metadata contains:
+                     'future'       : asyncio.Future[str] to resolve with user's answer
+                     'choices'      : List[str] of predefined options (may be empty)
+                     'allow_freeform': bool
+    """
+
+    type: str
     content: Optional[str] = None
     metadata: Optional[Dict] = None
 
@@ -76,7 +84,9 @@ class CopilotSDKManager:
         user_id: int = 0,
         session_id: Optional[str] = None,
         continue_session: bool = False,
-        stream_callback: Optional[Callable[[CopilotStreamUpdate], None]] = None,
+        stream_callback: Optional[
+            Callable[[CopilotStreamUpdate], Union[None, Awaitable[None]]]
+        ] = None,
         model: Optional[str] = None,
     ) -> CopilotResponse:
         """Execute a prompt via Copilot SDK with full session management."""
@@ -103,6 +113,49 @@ class CopilotSDKManager:
             model=effective_model,
         )
 
+        # Build ask_user handler — forwards question to Telegram via stream_callback,
+        # then awaits an asyncio.Future that the bot resolves when the user replies.
+        async def _on_user_input_request(request: Any) -> Dict[str, Any]:
+            question: str = getattr(request, "question", "") or ""
+            choices: List[str] = list(getattr(request, "choices", None) or [])
+            allow_freeform: bool = bool(getattr(request, "allowFreeform", True))
+
+            future: "asyncio.Future[str]" = asyncio.get_event_loop().create_future()
+
+            if stream_callback:
+                result = stream_callback(
+                    CopilotStreamUpdate(
+                        type="ask_user",
+                        content=question,
+                        metadata={
+                            "future": future,
+                            "choices": choices,
+                            "allow_freeform": allow_freeform,
+                        },
+                    )
+                )
+                if asyncio.iscoroutine(result):
+                    await result
+            else:
+                # No Telegram channel available — unblock immediately with empty string.
+                future.set_result("")
+
+            try:
+                answer = await asyncio.wait_for(asyncio.shield(future), timeout=300)
+            except asyncio.TimeoutError:
+                logger.warning("ask_user timed out waiting for user response")
+                answer = ""
+
+            return {"answer": answer, "wasFreeform": allow_freeform}
+
+        def _make_session_config(**extra: Any) -> "SessionConfig":
+            return SessionConfig(
+                model=effective_model,
+                workspace_path=str(working_directory),
+                on_user_input_request=_on_user_input_request,
+                **extra,
+            )
+
         try:
             # Resume or create session
             if copilot_session_id and continue_session:
@@ -120,17 +173,9 @@ class CopilotSDKManager:
                         session_id=copilot_session_id,
                         error=str(e),
                     )
-                    session = await client.create_session(
-                        SessionConfig(
-                            model=effective_model, workspace_path=str(working_directory)
-                        )
-                    )
+                    session = await client.create_session(_make_session_config())
             else:
-                session = await client.create_session(
-                    SessionConfig(
-                        model=effective_model, workspace_path=str(working_directory)
-                    )
-                )
+                session = await client.create_session(_make_session_config())
 
             # Collect streaming content
             content_parts: List[str] = []
@@ -147,11 +192,11 @@ class CopilotSDKManager:
                     if content:
                         content_parts.append(content)
                         if stream_callback:
-                            asyncio.create_task(
-                                stream_callback(
-                                    CopilotStreamUpdate(type="result", content=content)
-                                )
+                            cb_result = stream_callback(
+                                CopilotStreamUpdate(type="result", content=content)
                             )
+                            if asyncio.iscoroutine(cb_result):
+                                asyncio.create_task(cb_result)
 
             session.on(event_handler)
 
