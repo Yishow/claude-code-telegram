@@ -41,7 +41,10 @@ class CopilotStreamUpdate:
     """Streaming update from Copilot SDK.
 
     type values:
-      'result'             — assistant text chunk
+      'result'             — assistant text chunk (final or streaming delta)
+      'reasoning'          — model reasoning/thinking delta (VERBOSE_LEVEL >= 2)
+      'tool'               — tool invocation event; metadata: {'tool_name': str,
+                               'tool_args': dict, 'action': 'pre'|'post'}
       'ask_user'           — agent needs user input; metadata contains:
                                'future'        : asyncio.Future[str]
                                'choices'       : List[str] (may be empty)
@@ -196,6 +199,7 @@ class CopilotSDKManager:
                 workspace_path=str(working_directory),
                 on_user_input_request=_on_user_input_request,
                 on_permission_request=_on_permission_request,
+                streaming=True,  # enables assistant.message_delta + reasoning_delta
                 **extra,
             )
 
@@ -224,14 +228,15 @@ class CopilotSDKManager:
             content_parts: List[str] = []
 
             def event_handler(event: Any) -> None:
-                event_type = getattr(event, "type", "")
+                event_type = str(getattr(event, "type", ""))
+                data = getattr(event, "data", None)
+
+                # Final assistant message
                 if (
-                    str(event_type) == "assistant_message"
-                    or "ASSISTANT" in str(event_type).upper()
+                    event_type == "assistant_message"
+                    or "ASSISTANT" in event_type.upper()
                 ):
-                    content = (
-                        getattr(getattr(event, "data", None), "content", None) or ""
-                    )
+                    content = getattr(data, "content", None) or ""
                     if content:
                         content_parts.append(content)
                         if stream_callback:
@@ -240,6 +245,42 @@ class CopilotSDKManager:
                             )
                             if asyncio.iscoroutine(cb_result):
                                 asyncio.create_task(cb_result)
+
+                # Streaming text delta (requires streaming=True in SessionConfig)
+                elif event_type == "assistant.message_delta":
+                    delta = getattr(data, "delta_content", None) or ""
+                    if delta and stream_callback:
+                        cb_result = stream_callback(
+                            CopilotStreamUpdate(type="result", content=delta)
+                        )
+                        if asyncio.iscoroutine(cb_result):
+                            asyncio.create_task(cb_result)
+
+                # Reasoning / thinking delta (only with reasoning-capable models)
+                elif event_type == "assistant.reasoning_delta":
+                    reasoning = getattr(data, "delta_content", None) or ""
+                    if reasoning and stream_callback:
+                        cb_result = stream_callback(
+                            CopilotStreamUpdate(type="reasoning", content=reasoning)
+                        )
+                        if asyncio.iscoroutine(cb_result):
+                            asyncio.create_task(cb_result)
+
+                # Tool invocation events
+                elif event_type in ("tool_use", "tool_result"):
+                    tool_name = getattr(data, "tool_name", None) or ""
+                    tool_args = getattr(data, "tool_args", None) or {}
+                    action = "pre" if event_type == "tool_use" else "post"
+                    if tool_name and stream_callback:
+                        cb_result = stream_callback(
+                            CopilotStreamUpdate(
+                                type="tool",
+                                content=tool_name,
+                                metadata={"tool_name": tool_name, "tool_args": tool_args, "action": action},
+                            )
+                        )
+                        if asyncio.iscoroutine(cb_result):
+                            asyncio.create_task(cb_result)
 
             session.on(event_handler)
 
