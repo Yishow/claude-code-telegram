@@ -13,6 +13,11 @@ make dev              # Install all deps (including dev)
 make install          # Production deps only
 make run              # Run the bot
 make run-debug        # Run with debug logging
+make daemon-up        # One-click persistent service (systemd --user)
+make daemon-down      # Stop + disable persistent service
+make daemon-status    # Show persistent service status
+make daemon-logs      # Tail persistent service logs
+make daemon-uninstall # Remove persistent service unit file
 make test             # Run tests with coverage
 make lint             # Black + isort + flake8 + mypy
 make format           # Auto-format with black + isort
@@ -157,6 +162,26 @@ origin/main       A──B──C──D (mirror of upstream/main)
                     \
 feature/my-work      feat1──feat2──feat3 (your custom commits, rebased on main)
 ```
+
+### Lazy menu workflow (do not memorize Git commands)
+
+- Open guided menu: `make menu`
+- First start of a new feature: `2` -> develop/commit
+- Daily sync: `3` (sync `main` + rebase current `feature/*`), then continue working
+- If auto-stash was created and not restored yet: `10`
+- If `main` accidentally has private commits: `9`
+  - This creates `backup/*` and `feature/migrated-main-*`
+  - Resets `main` to `upstream/main`
+  - Pushes `origin/main` with `--force-with-lease`
+  - Switches to migrated feature branch and restores current auto-stash automatically
+
+### Persistent service quick ops
+
+- Start resident mode: `make daemon-up`
+- Stop resident mode: `make daemon-down`
+- Check status: `make daemon-status`
+- View logs: `make daemon-logs`
+- Remove service setup completely: `make daemon-uninstall`
 
 ### Conflict resolution priority
 
