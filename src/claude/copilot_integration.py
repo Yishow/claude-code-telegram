@@ -288,6 +288,7 @@ class CopilotProcessManager:
     ) -> Any:
         """Execute command using Copilot SDK (with CLI fallback). Returns ClaudeResponse."""
         from .copilot_sdk_integration import CopilotSDKManager  # noqa: PLC0415
+        from .sdk_integration import StreamUpdate  # noqa: PLC0415
 
         ClaudeResponse = _get_claude_response_class()
 
@@ -298,6 +299,21 @@ class CopilotProcessManager:
             continue_session=continue_session,
         )
 
+        # Wrap stream_callback to convert CopilotStreamUpdate -> StreamUpdate so
+        # the facade's on_stream handler (which checks isinstance(update, StreamUpdate))
+        # can receive Copilot streaming updates.
+        wrapped_callback: Optional[Callable] = None
+        if stream_callback:
+
+            async def wrapped_callback(update: CopilotStreamUpdate) -> None:
+                await stream_callback(
+                    StreamUpdate(
+                        type=update.type,
+                        content=update.content,
+                        metadata=update.metadata,
+                    )
+                )
+
         sdk_manager = CopilotSDKManager(self.config)
         try:
             copilot_response = await sdk_manager.execute_command(
@@ -306,7 +322,7 @@ class CopilotProcessManager:
                 user_id=user_id,
                 session_id=session_id,
                 continue_session=continue_session,
-                stream_callback=stream_callback,
+                stream_callback=wrapped_callback,
             )
         except Exception as sdk_error:
             logger.warning(
@@ -318,7 +334,7 @@ class CopilotProcessManager:
                 working_directory=working_directory,
                 session_id=session_id,
                 continue_session=continue_session,
-                stream_callback=stream_callback,
+                stream_callback=wrapped_callback,
             )
 
         return ClaudeResponse(
