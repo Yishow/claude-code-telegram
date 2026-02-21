@@ -43,7 +43,7 @@ install:
 	uv sync --no-dev
 
 dev:
-	uv sync
+	uv sync --extra dev
 
 # ---------------------------------------------------------------------------
 # Quality

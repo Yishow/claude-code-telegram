@@ -1,16 +1,16 @@
 """Tests for CopilotSDKManager session lifecycle."""
 
 import asyncio
-from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch, call
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from src.claude.copilot_sdk_integration import (
-    CopilotSDKManager,
-    CopilotResponse,
-    CopilotStreamUpdate,
-)
+try:
+    from copilot import CopilotClient as _CC  # noqa: F401
+except ImportError:
+    pytest.skip("github-copilot-sdk not installed", allow_module_level=True)
+
+from src.claude.copilot_sdk_integration import CopilotSDKManager  # noqa: E402
 from src.claude.exceptions import ClaudeProcessError, ClaudeTimeoutError
 from src.config.settings import Settings
 
@@ -62,7 +62,7 @@ class TestExecuteCommand:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             response = await manager.execute_command(
                 prompt="hello",
@@ -79,7 +79,7 @@ class TestExecuteCommand:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             await manager.execute_command(
                 prompt="hello", working_directory=tmp_path, user_id=42
@@ -94,7 +94,7 @@ class TestExecuteCommand:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             with pytest.raises(ClaudeTimeoutError):
                 await manager.execute_command(
@@ -109,7 +109,7 @@ class TestExecuteCommand:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             with pytest.raises(ClaudeProcessError, match="rpc failed"):
                 await manager.execute_command(
@@ -128,7 +128,7 @@ class TestSessionLifecycle:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             # First call — creates new session
             await manager.execute_command(
@@ -152,7 +152,7 @@ class TestSessionLifecycle:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             # Seed a stored session
             manager._session_map[manager._session_key(7, tmp_path)] = "old-sid"
@@ -178,7 +178,7 @@ class TestSessionLifecycle:
         manager._session_map[manager._session_key(9, tmp_path)] = "expired-sid"
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             response = await manager.execute_command(
                 prompt="hello again",
@@ -213,7 +213,7 @@ class TestSessionLifecycle:
         client.create_session = AsyncMock(side_effect=create_session_side_effect)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             r1 = await manager.execute_command(
                 prompt="hi", working_directory=tmp_path, user_id=1
@@ -237,7 +237,7 @@ class TestClientLifecycle:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             await manager.execute_command(
                 prompt="a", working_directory=tmp_path, user_id=1
@@ -253,7 +253,7 @@ class TestClientLifecycle:
         client = _make_client(session)
 
         with patch(
-            "src.claude.copilot_sdk_integration.CopilotClient", return_value=client
+            "copilot.CopilotClient", return_value=client
         ):
             await manager.execute_command(
                 prompt="hi", working_directory=tmp_path, user_id=1
