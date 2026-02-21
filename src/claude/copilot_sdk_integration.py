@@ -10,6 +10,8 @@ Session lifecycle:
 """
 
 import asyncio
+import base64
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
@@ -95,8 +97,13 @@ class CopilotSDKManager:
             Callable[[CopilotStreamUpdate], Union[None, Awaitable[None]]]
         ] = None,
         model: Optional[str] = None,
+        image_path: Optional[str] = None,
     ) -> CopilotResponse:
-        """Execute a prompt via Copilot SDK with full session management."""
+        """Execute a prompt via Copilot SDK with full session management.
+
+        ``image_path`` is an optional path to an image file to attach to the
+        message.  The SDK accepts ``{"type": "file", "path": ...}`` attachments.
+        """
         from copilot import ResumeSessionConfig, SessionConfig
 
         start_time = asyncio.get_event_loop().time()
@@ -372,9 +379,16 @@ class CopilotSDKManager:
 
             session.on(event_handler)
 
+            # Build message options — attach image if provided
+            message_options: Dict[str, Any] = {"prompt": prompt}
+            _tmp_image_path: Optional[str] = None
+            if image_path:
+                message_options["attachments"] = [{"type": "file", "path": image_path}]
+                logger.debug("Attaching image to Copilot message", image_path=image_path)
+
             # Send and wait
             result_event = await asyncio.wait_for(
-                session.send_and_wait({"prompt": prompt}),
+                session.send_and_wait(message_options),
                 timeout=timeout,
             )
 

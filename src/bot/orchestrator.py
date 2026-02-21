@@ -1151,7 +1151,10 @@ class MessageOrchestrator:
     async def agentic_photo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Process photo -> Claude, minimal chrome."""
+        """Process photo -> Claude/Copilot, minimal chrome."""
+        import os  # noqa: PLC0415
+        import tempfile  # noqa: PLC0415
+
         user_id = update.effective_user.id
 
         features = context.bot_data.get("features")
@@ -1165,6 +1168,7 @@ class MessageOrchestrator:
         await chat.send_action("typing")
         progress_msg = await update.message.reply_text("Working...")
 
+        tmp_path: Optional[str] = None
         try:
             photo = update.message.photo[-1]
             processed_image = await image_handler.process_image(
@@ -1187,6 +1191,22 @@ class MessageOrchestrator:
             # Flag is only cleared after a successful run so retries keep the intent.
             force_new = bool(context.user_data.get("force_new_session"))
 
+            # For the Copilot provider, write image to a tmp file so it can be
+            # passed as a file attachment in send_and_wait.
+            image_path: Optional[str] = None
+            if self.settings.default_provider == "copilot":
+                fmt = processed_image.metadata.get("format", "png") if processed_image.metadata else "png"
+                suffix = f".{fmt}" if fmt != "unknown" else ".png"
+                import base64  # noqa: PLC0415
+                img_bytes = base64.b64decode(processed_image.base64_data)
+                fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                try:
+                    with os.fdopen(fd, "wb") as fh:
+                        fh.write(img_bytes)
+                    image_path = tmp_path
+                except Exception:
+                    os.close(fd)
+
             verbose_level = self._get_verbose_level(context)
             tool_log: List[Dict[str, Any]] = []
             on_stream = self._make_stream_callback(
@@ -1203,6 +1223,7 @@ class MessageOrchestrator:
                     on_stream=on_stream,
                     force_new=force_new,
                     copilot_model=context.user_data.get("copilot_model"),
+                    image_path=image_path,
                 )
             finally:
                 heartbeat.cancel()
@@ -1238,6 +1259,13 @@ class MessageOrchestrator:
             logger.error(
                 "Claude photo processing failed", error=str(e), user_id=user_id
             )
+        finally:
+            # Clean up temporary image file written for Copilot attachment
+            if tmp_path:
+                try:
+                    os.unlink(tmp_path)
+                except Exception:
+                    pass
 
     async def agentic_repo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
