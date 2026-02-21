@@ -41,11 +41,15 @@ class CopilotStreamUpdate:
     """Streaming update from Copilot SDK.
 
     type values:
-      'result'   — assistant text chunk
-      'ask_user' — agent needs user input; metadata contains:
-                     'future'       : asyncio.Future[str] to resolve with user's answer
-                     'choices'      : List[str] of predefined options (may be empty)
-                     'allow_freeform': bool
+      'result'             — assistant text chunk
+      'ask_user'           — agent needs user input; metadata contains:
+                               'future'        : asyncio.Future[str]
+                               'choices'       : List[str] (may be empty)
+                               'allow_freeform': bool
+      'permission_request' — agent wants to perform a privileged action; metadata:
+                               'future' : asyncio.Future[bool] (True=approve)
+                               'kind'   : str ("shell","write","read","mcp","url")
+                               'tool_call_id': str
     """
 
     type: str
@@ -113,6 +117,44 @@ class CopilotSDKManager:
             model=effective_model,
         )
 
+        # Build permission_request handler — sends Approve/Deny to Telegram,
+        # awaits a bool Future resolved by the user's inline button press.
+        async def _on_permission_request(
+            request: Any, _context: Any
+        ) -> Dict[str, Any]:
+            kind: str = getattr(request, "kind", "unknown")
+            tool_call_id: str = getattr(request, "toolCallId", "") or ""
+
+            future: "asyncio.Future[bool]" = asyncio.get_event_loop().create_future()
+
+            if stream_callback:
+                result = stream_callback(
+                    CopilotStreamUpdate(
+                        type="permission_request",
+                        content=kind,
+                        metadata={
+                            "future": future,
+                            "kind": kind,
+                            "tool_call_id": tool_call_id,
+                        },
+                    )
+                )
+                if asyncio.iscoroutine(result):
+                    await result
+            else:
+                # No Telegram channel — auto-approve to keep execution unblocked.
+                future.set_result(True)
+
+            try:
+                approved = await asyncio.wait_for(asyncio.shield(future), timeout=120)
+            except asyncio.TimeoutError:
+                logger.warning("permission_request timed out, denying", kind=kind)
+                approved = False
+
+            if approved:
+                return {"kind": "approved", "rules": []}
+            return {"kind": "denied-interactively-by-user", "rules": []}
+
         # Build ask_user handler — forwards question to Telegram via stream_callback,
         # then awaits an asyncio.Future that the bot resolves when the user replies.
         async def _on_user_input_request(request: Any) -> Dict[str, Any]:
@@ -153,6 +195,7 @@ class CopilotSDKManager:
                 model=effective_model,
                 workspace_path=str(working_directory),
                 on_user_input_request=_on_user_input_request,
+                on_permission_request=_on_permission_request,
                 **extra,
             )
 
