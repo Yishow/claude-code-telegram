@@ -6,23 +6,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Telegram bot providing remote access to Claude Code. Python 3.10+, built with Poetry, using `python-telegram-bot` for Telegram and `claude-agent-sdk` for Claude Code integration.
 
-## Package Manager (Fork-only: uv)
-
-This fork uses **uv** instead of Poetry. `pyproject.toml` has a `[project]` block (PEP 517 standard) that uv reads; the original `[tool.poetry]` block is kept for upstream compatibility but is not used by uv.
-
-**Rebuild venv from scratch:**
-```bash
-rm -rf .venv uv.lock
-uv sync --extra dev
-```
-
-**Never use `pip install` or `poetry install`** — always `uv sync`.
-
 ## Commands
 
 ```bash
-make dev              # uv sync --extra dev (install all deps including dev)
-make install          # uv sync (production deps only)
+make dev              # Install all deps (including dev)
+make install          # Production deps only
 make run              # Run the bot
 make run-debug        # Run with debug logging
 make test             # Run tests with coverage
@@ -30,10 +18,10 @@ make lint             # Black + isort + flake8 + mypy
 make format           # Auto-format with black + isort
 
 # Run a single test
-uv run pytest tests/unit/test_config.py -k test_name -v --no-cov
+poetry run pytest tests/unit/test_config.py -k test_name -v
 
 # Type checking only
-uv run mypy src
+poetry run mypy src
 ```
 
 ## Architecture
@@ -43,17 +31,6 @@ uv run mypy src
 `ClaudeIntegration` (facade in `src/claude/facade.py`) wraps `ClaudeSDKManager` (`src/claude/sdk_integration.py`), which uses `claude-agent-sdk` with `ClaudeSDKClient` for async streaming. Session IDs come from Claude's `ResultMessage`, not generated locally.
 
 Sessions auto-resume: per user+directory, persisted in SQLite.
-
-### Copilot Provider (Fork-only)
-
-`ClaudeIntegration` supports a second provider: **GitHub Copilot**. Controlled by `DEFAULT_PROVIDER=copilot` (env) or `default_provider` in `Settings`.
-
-Provider dispatch is in `facade._execute()` — a single `if actual_provider == "copilot"` branch. All Copilot logic lives in:
-
-- `src/claude/copilot_integration.py` — `CopilotProcessManager` (CLI subprocess) + `execute_full()` (SDK→CLI fallback, returns `ClaudeResponse`)
-- `src/claude/copilot_sdk_integration.py` — `CopilotSDKManager` (github-copilot-sdk JSON-RPC)
-
-**Design rule:** keep `facade.py` changes minimal — only the dispatch branch. Copilot-specific logic must stay in `copilot_*.py` files so rebase conflicts with upstream are minimised.
 
 ### Request Flow
 
@@ -156,33 +133,36 @@ Agentic mode commands: `/start`, `/new`, `/status`, `/verbose`, `/repo`. If `ENA
 2. Register in `MessageOrchestrator._register_classic_handlers()`
 3. Add to `MessageOrchestrator.get_bot_commands()` for Telegram's command menu
 4. Add audit logging for the command
-
 ## Fork & Upstream Workflow
 
 This repo is a **personal fork** of [RichardAtCT/claude-code-telegram](https://github.com/RichardAtCT/claude-code-telegram).
-All custom features (e.g. Copilot integration) are layered **on top of** upstream via rebase — never via merge commits.
+All custom features (e.g. Copilot integration) should be developed in `feature/*` branches, while `main` tracks upstream.
 
 ### Rules for every code change
 
-1. **Never merge upstream** — always use `make sync` (which runs `git rebase -X theirs upstream/main`).
-2. **Keep custom commits atomic and self-contained** — each commit should be independently rebased without pulling in upstream internals.
-3. **When resolving rebase conflicts**, prefer keeping the local (feature) logic; only adopt upstream changes that don't conflict with existing features.
-4. **After any `make sync`**, verify with `make status` that your commits sit cleanly on top of `upstream/main`.
-5. **Push with `git push --force-with-lease`** — never plain `--force`.
+1. **Do not put custom feature commits on `main`** — use `make feature-new NAME=<feature-name>`.
+2. **Sync `main` with upstream via fast-forward only** — use `make sync-main`.
+3. **Daily development sync** — run `make sync` on your feature branch (sync main first, then rebase feature onto main).
+4. **Resolve conflicts manually** — no automatic `-X theirs` conflict preference.
+5. **After rebase, push with `git push --force-with-lease`** — never plain `--force`.
+6. **If `main` already contains private commits**, run `make repair-main` to move them into `feature/*`, restore `main` to upstream, and switch to the new feature branch.
+7. **If you do not want to remember commands, run `make menu`** for the guided lazy workflow.
 
 ### Branch strategy
 
 ```
 upstream/main  ──A──B──C──D (RichardAtCT releases)
-                            \
-origin/main                  feat1──feat2──feat3  (your commits, always rebased on top)
+                 \
+origin/main       A──B──C──D (mirror of upstream/main)
+                    \
+feature/my-work      feat1──feat2──feat3 (your custom commits, rebased on main)
 ```
 
 ### Conflict resolution priority
 
 | File / area | Resolution |
 |---|---|
-| upstream-only new files | auto-accepted via `-X theirs` |
+| upstream-only new files | keep upstream version |
 | Your feature files (`copilot_*.py`, `docs/`) | always keep your version |
 | Shared files (`facade.py`, `settings.py`, `main.py`) | manually merge: keep your logic, adopt upstream API changes |
 | `pyproject.toml` | keep `[project]` block (fork-only); adopt upstream `[tool.poetry]` changes |

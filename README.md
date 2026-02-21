@@ -90,6 +90,30 @@ Message your bot on Telegram to get started.
 
 > **Detailed setup:** See [docs/setup.md](docs/setup.md) for Claude authentication options and troubleshooting.
 
+### 5. Fork Maintenance (Lazy Menu)
+
+If you maintain a personal fork and do not want to remember Git sync commands:
+
+```bash
+make menu
+```
+
+By default, workflow confirmations are auto-approved (`AUTO_YES=1`).
+If you want manual confirmation prompts back temporarily:
+
+```bash
+AUTO_YES=0 make menu
+```
+
+The menu includes detailed explanations and examples for:
+
+- Checking upstream divergence (`make status`)
+- Creating a feature branch from latest `main` (`make feature-new NAME=<feature-name>`)
+- One-click sync (`make sync`: sync `main` with upstream, then rebase current feature branch)
+- Repairing `main` if it accidentally contains private commits (`make repair-main`: also switches to the new `feature/*` branch and restores the current auto-stash there)
+- Auto-stashing dirty changes when sync/rebase needs a clean worktree, then restoring with `make stash-pop`
+- Rebase recovery (`make sync-continue` / `make sync-abort`)
+
 ## Modes
 
 The bot supports two interaction modes:
