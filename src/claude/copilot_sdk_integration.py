@@ -268,6 +268,7 @@ class CopilotSDKManager:
         compaction_threshold = float(
             getattr(self.config, "copilot_compaction_threshold", 0.80)
         )
+        mcp_servers = self._load_mcp_servers()
 
         def _make_session_config(**extra: Any) -> "SessionConfig":
             cfg = SessionConfig(
@@ -280,6 +281,8 @@ class CopilotSDKManager:
                 streaming=True,  # enables assistant.message_delta + reasoning_delta
                 **extra,
             )
+            if mcp_servers:
+                cfg["mcp_servers"] = mcp_servers
             if infinite_sessions_enabled:
                 cfg["infinite_sessions"] = {
                     "enabled": True,
@@ -416,6 +419,59 @@ class CopilotSDKManager:
         """Remove stored session (e.g. after /new command)."""
         key = self._session_key(user_id, working_directory)
         self._session_map.pop(key, None)
+
+    def _load_mcp_servers(self) -> List[Dict[str, Any]]:
+        """Convert Claude-format MCP config to Copilot SDK MCPServerConfig list.
+
+        Claude SDK config format (JSON):
+          {"mcpServers": {"name": {"command": "...", "args": [...], "env": {...}}}}
+
+        Copilot SDK expects a list of MCPLocalServerConfig or MCPRemoteServerConfig:
+          [{"type": "stdio", "command": "...", "args": [...], "env": {...}, "tools": ["*"]}]
+          [{"type": "http",  "url":  "...", "tools": ["*"]}]
+        """
+        enable_mcp: bool = bool(getattr(self.config, "enable_mcp", False))
+        mcp_config_path = getattr(self.config, "mcp_config_path", None)
+
+        if not enable_mcp or not mcp_config_path:
+            return []
+
+        import json  # noqa: PLC0415
+
+        try:
+            with open(mcp_config_path) as f:
+                raw = json.load(f)
+        except (OSError, json.JSONDecodeError) as e:
+            logger.warning("Failed to load MCP config for Copilot", error=str(e))
+            return []
+
+        servers: List[Dict[str, Any]] = []
+        for name, cfg in raw.get("mcpServers", {}).items():
+            url: Optional[str] = cfg.get("url")
+            if url:
+                # Remote server (HTTP/SSE)
+                srv_type = "sse" if "sse" in url else "http"
+                servers.append({
+                    "type": srv_type,
+                    "url": url,
+                    "tools": cfg.get("tools", ["*"]),
+                })
+            else:
+                # Local stdio server
+                servers.append({
+                    "type": "stdio",
+                    "command": cfg.get("command", ""),
+                    "args": cfg.get("args", []),
+                    "env": cfg.get("env", {}),
+                    "tools": cfg.get("tools", ["*"]),
+                })
+
+        logger.info(
+            "Loaded MCP servers for Copilot",
+            count=len(servers),
+            config_path=str(mcp_config_path),
+        )
+        return servers
 
     async def shutdown(self) -> None:
         """Stop the CopilotClient."""
