@@ -745,14 +745,34 @@ class MessageOrchestrator:
             if verbose_level == 0:
                 return
 
-            # Capture tool calls
+            # Copilot tool event (type="tool", from event_handler in sdk_integration)
+            if update_obj.type == "tool":
+                meta = update_obj.metadata or {}
+                name = meta.get("tool_name") or update_obj.content or "unknown"
+                if meta.get("action") == "pre" and verbose_level >= 1:
+                    detail = self._summarize_tool_input(
+                        name, meta.get("tool_args") or {}
+                    )
+                    tool_log.append({"kind": "tool", "name": name, "detail": detail})
+
+            # Reasoning delta (VERBOSE_LEVEL >= 2 only)
+            elif update_obj.type == "reasoning" and update_obj.content:
+                if verbose_level >= 2:
+                    text = update_obj.content.strip()
+                    first_line = text.split("\n", 1)[0].strip()
+                    if first_line:
+                        tool_log.append(
+                            {"kind": "text", "detail": f"🤔 {first_line[:120]}"}
+                        )
+
+            # Capture tool calls (Claude SDK path, tool_calls field)
             if update_obj.tool_calls:
                 for tc in update_obj.tool_calls:
                     name = tc.get("name", "unknown")
                     detail = self._summarize_tool_input(name, tc.get("input", {}))
                     tool_log.append({"kind": "tool", "name": name, "detail": detail})
 
-            # Capture assistant text (reasoning / commentary)
+            # Capture assistant text (reasoning / commentary, Claude SDK path)
             if update_obj.type == "assistant" and update_obj.content:
                 text = update_obj.content.strip()
                 if text and verbose_level >= 1:
