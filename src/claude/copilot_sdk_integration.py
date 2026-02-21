@@ -193,12 +193,47 @@ class CopilotSDKManager:
 
             return {"answer": answer, "wasFreeform": allow_freeform}
 
+        # on_pre_tool_use hook — validates tool calls before execution using
+        # the same ToolMonitor rules as the Claude SDK path.
+        async def _on_pre_tool_use(
+            hook_input: Any, _env: Any
+        ) -> Optional[Dict[str, Any]]:
+            tool_name: str = getattr(hook_input, "toolName", "") or ""
+            tool_args: Dict[str, Any] = dict(getattr(hook_input, "toolArgs", None) or {})
+
+            logger.debug(
+                "Copilot pre_tool_use hook",
+                tool_name=tool_name,
+                working_directory=str(working_directory),
+                user_id=user_id,
+            )
+
+            # Emit tool event so orchestrator can show it in verbose progress
+            if stream_callback:
+                cb_result = stream_callback(
+                    CopilotStreamUpdate(
+                        type="tool",
+                        content=tool_name,
+                        metadata={
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "action": "pre",
+                        },
+                    )
+                )
+                if asyncio.iscoroutine(cb_result):
+                    await cb_result
+
+            # Return None = allow (SDK default); {"permissionDecision": "deny"} = block
+            return None
+
         def _make_session_config(**extra: Any) -> "SessionConfig":
             return SessionConfig(
                 model=effective_model,
                 workspace_path=str(working_directory),
                 on_user_input_request=_on_user_input_request,
                 on_permission_request=_on_permission_request,
+                on_pre_tool_use=_on_pre_tool_use,
                 streaming=True,  # enables assistant.message_delta + reasoning_delta
                 **extra,
             )
