@@ -227,8 +227,15 @@ class CopilotSDKManager:
             # Return None = allow (SDK default); {"permissionDecision": "deny"} = block
             return None
 
+        infinite_sessions_enabled = bool(
+            getattr(self.config, "copilot_infinite_sessions", True)
+        )
+        compaction_threshold = float(
+            getattr(self.config, "copilot_compaction_threshold", 0.80)
+        )
+
         def _make_session_config(**extra: Any) -> "SessionConfig":
-            return SessionConfig(
+            cfg = SessionConfig(
                 model=effective_model,
                 workspace_path=str(working_directory),
                 on_user_input_request=_on_user_input_request,
@@ -237,6 +244,13 @@ class CopilotSDKManager:
                 streaming=True,  # enables assistant.message_delta + reasoning_delta
                 **extra,
             )
+            if infinite_sessions_enabled:
+                cfg["infinite_sessions"] = {
+                    "enabled": True,
+                    "background_compaction_threshold": compaction_threshold,
+                    "buffer_exhaustion_threshold": min(compaction_threshold + 0.15, 0.99),
+                }
+            return cfg
 
         try:
             # Resume or create session
