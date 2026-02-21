@@ -285,6 +285,7 @@ class CopilotProcessManager:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
+        model: Optional[str] = None,
     ) -> Any:
         """Execute command using Copilot SDK (with CLI fallback). Returns ClaudeResponse."""
         from .copilot_sdk_integration import CopilotSDKManager  # noqa: PLC0415
@@ -323,6 +324,7 @@ class CopilotProcessManager:
                 session_id=session_id,
                 continue_session=continue_session,
                 stream_callback=wrapped_callback,
+                model=model,
             )
         except Exception as sdk_error:
             logger.warning(
@@ -335,6 +337,7 @@ class CopilotProcessManager:
                 session_id=session_id,
                 continue_session=continue_session,
                 stream_callback=wrapped_callback,
+                model=model,
             )
 
         return ClaudeResponse(

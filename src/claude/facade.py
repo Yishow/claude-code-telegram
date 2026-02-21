@@ -52,6 +52,7 @@ class ClaudeIntegration:
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
         force_new: bool = False,
         provider: Optional[ProviderType] = None,
+        copilot_model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Run Claude Code or Copilot command with full integration."""
         # Use specified provider or default
@@ -106,6 +107,7 @@ class ClaudeIntegration:
                     continue_session=should_continue,
                     stream_callback=on_stream,
                     provider=actual_provider,
+                    copilot_model=copilot_model,
                 )
             except Exception as resume_error:
                 # If resume failed (e.g., session expired/missing on Claude's side),
@@ -132,6 +134,7 @@ class ClaudeIntegration:
                         continue_session=False,
                         stream_callback=on_stream,
                         provider=actual_provider,
+                        copilot_model=copilot_model,
                     )
                 else:
                     raise
@@ -177,6 +180,7 @@ class ClaudeIntegration:
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
         provider: Optional[ProviderType] = None,
+        copilot_model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Execute command via SDK or Copilot."""
         actual_provider = provider or self.default_provider
@@ -189,6 +193,7 @@ class ClaudeIntegration:
                 session_id=session_id,
                 continue_session=continue_session,
                 stream_callback=stream_callback,
+                model=copilot_model,
             )
 
         return await self.sdk_manager.execute_command(
