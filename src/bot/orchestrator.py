@@ -291,6 +291,7 @@ class MessageOrchestrator:
             ("status", self.agentic_status),
             ("verbose", self.agentic_verbose),
             ("repo", self.agentic_repo),
+            ("model", self.agentic_model),
         ]
         if self.settings.enable_project_threads:
             handlers.append(("sync_threads", command.sync_threads))
@@ -404,6 +405,7 @@ class MessageOrchestrator:
                 BotCommand("status", "Show session status"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("repo", "List repos / switch workspace"),
+                BotCommand("model", "Switch AI model (Copilot provider)"),
             ]
             if self.settings.enable_project_threads:
                 commands.append(BotCommand("sync_threads", "Sync project topics"))
@@ -561,6 +563,42 @@ class MessageOrchestrator:
         labels = {0: "quiet", 1: "normal", 2: "detailed"}
         await update.message.reply_text(
             f"Verbosity set to <b>{level}</b> ({labels[level]})",
+            parse_mode="HTML",
+        )
+
+    async def agentic_model(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Switch AI model for the Copilot provider: /model [model_name]."""
+        from ..claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
+
+        args = context.args or []
+
+        if not args:
+            current = context.user_data.get(
+                "copilot_model", self.settings.copilot_model
+            )
+            model_list = "\n".join(f"  <code>{m}</code>" for m in COPILOT_MODELS)
+            await update.message.reply_text(
+                f"Current model: <code>{escape_html(current)}</code>\n\n"
+                f"<b>Available models:</b>\n{model_list}\n\n"
+                "Usage: <code>/model &lt;model_name&gt;</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        requested = args[0].strip()
+        if requested not in COPILOT_MODELS:
+            await update.message.reply_text(
+                f"Unknown model: <code>{escape_html(requested)}</code>\n"
+                "Use <code>/model</code> to list available models.",
+                parse_mode="HTML",
+            )
+            return
+
+        context.user_data["copilot_model"] = requested
+        await update.message.reply_text(
+            f"Model switched to <code>{escape_html(requested)}</code>",
             parse_mode="HTML",
         )
 
@@ -865,6 +903,7 @@ class MessageOrchestrator:
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
+                copilot_model=context.user_data.get("copilot_model"),
             )
 
             # New session created successfully — clear the one-shot flag
@@ -1068,6 +1107,7 @@ class MessageOrchestrator:
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
+                copilot_model=context.user_data.get("copilot_model"),
             )
 
             if force_new:
@@ -1162,6 +1202,7 @@ class MessageOrchestrator:
                     session_id=session_id,
                     on_stream=on_stream,
                     force_new=force_new,
+                    copilot_model=context.user_data.get("copilot_model"),
                 )
             finally:
                 heartbeat.cancel()
