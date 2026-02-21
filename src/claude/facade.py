@@ -9,9 +9,8 @@ from typing import Any, Callable, Dict, List, Literal, Optional
 import structlog
 
 from ..config.settings import Settings
-from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
 from .copilot_integration import CopilotProcessManager
-from .copilot_sdk_integration import CopilotSDKManager
+from .sdk_integration import ClaudeResponse, ClaudeSDKManager, StreamUpdate
 from .session import SessionManager
 
 logger = structlog.get_logger()
@@ -41,7 +40,6 @@ class ClaudeIntegration:
                 "copilot" if configured_provider == "copilot" else "claude"
             )
         self.sdk_manager = sdk_manager or ClaudeSDKManager(config)
-        self.copilot_sdk_manager = CopilotSDKManager(config)
         self.copilot_manager = copilot_manager or CopilotProcessManager(config)
         self.session_manager = session_manager
 
@@ -184,7 +182,7 @@ class ClaudeIntegration:
         actual_provider = provider or self.default_provider
 
         if actual_provider == "copilot":
-            return await self._execute_copilot(
+            return await self.copilot_manager.execute_full(
                 prompt=prompt,
                 working_directory=working_directory,
                 user_id=user_id,
@@ -200,58 +198,6 @@ class ClaudeIntegration:
             continue_session=continue_session,
             stream_callback=stream_callback,
         )
-
-    async def _execute_copilot(
-        self,
-        prompt: str,
-        working_directory: Path,
-        user_id: int = 0,
-        session_id: Optional[str] = None,
-        continue_session: bool = False,
-        stream_callback: Optional[Callable] = None,
-        provider: Optional[ProviderType] = None,
-    ) -> ClaudeResponse:
-        """Execute command using Copilot SDK (with CLI fallback)."""
-        logger.info(
-            "Executing with Copilot SDK",
-            working_directory=str(working_directory),
-            session_id=session_id,
-            continue_session=continue_session,
-        )
-
-        try:
-            copilot_response = await self.copilot_sdk_manager.execute_command(
-                prompt=prompt,
-                working_directory=working_directory,
-                user_id=user_id,
-                session_id=session_id,
-                continue_session=continue_session,
-                stream_callback=stream_callback,
-            )
-        except Exception as sdk_error:
-            logger.warning(
-                "Copilot SDK failed, falling back to CLI",
-                error=str(sdk_error),
-            )
-            copilot_response = await self.copilot_manager.execute_command(
-                prompt=prompt,
-                working_directory=working_directory,
-                session_id=session_id,
-                continue_session=continue_session,
-                stream_callback=stream_callback,
-            )
-
-        return ClaudeResponse(
-            content=copilot_response.content,
-            session_id=copilot_response.session_id,
-            cost=copilot_response.cost,
-            duration_ms=copilot_response.duration_ms,
-            num_turns=copilot_response.num_turns,
-            is_error=copilot_response.is_error,
-            error_type=copilot_response.error_type,
-            tools_used=copilot_response.tools_used,
-        )
-
 
     async def _find_resumable_session(
         self,

@@ -1,7 +1,6 @@
 """Tests for CopilotProcessManager."""
 
 import asyncio
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -10,7 +9,6 @@ import yaml
 from src.claude.copilot_integration import (
     COPILOT_MODELS,
     CopilotProcessManager,
-    CopilotResponse,
     CopilotStreamUpdate,
 )
 from src.claude.exceptions import ClaudeProcessError, ClaudeTimeoutError

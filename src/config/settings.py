@@ -81,9 +81,7 @@ class Settings(BaseSettings):
     copilot_binary_path: Optional[str] = Field(
         None, description="Path to Copilot CLI binary"
     )
-    copilot_model: str = Field(
-        "gpt-5.3-codex", description="Copilot model to use"
-    )
+    copilot_model: str = Field("gpt-5.3-codex", description="Copilot model to use")
     default_provider: str = Field(
         "claude", description="Default AI provider: claude or copilot"
     )

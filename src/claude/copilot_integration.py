@@ -22,6 +22,19 @@ from .exceptions import (
     ClaudeTimeoutError,
 )
 
+# Lazy import to avoid circular dependency; resolved at call time.
+_ClaudeResponse = None
+
+
+def _get_claude_response_class() -> type:
+    global _ClaudeResponse
+    if _ClaudeResponse is None:
+        from .sdk_integration import ClaudeResponse  # noqa: PLC0415
+
+        _ClaudeResponse = ClaudeResponse
+    return _ClaudeResponse
+
+
 logger = structlog.get_logger()
 
 
@@ -263,6 +276,61 @@ class CopilotProcessManager:
 
         logger.debug("Built Copilot command", command=cmd)
         return cmd
+
+    async def execute_full(
+        self,
+        prompt: str,
+        working_directory: Path,
+        user_id: int = 0,
+        session_id: Optional[str] = None,
+        continue_session: bool = False,
+        stream_callback: Optional[Callable] = None,
+    ) -> Any:
+        """Execute command using Copilot SDK (with CLI fallback). Returns ClaudeResponse."""
+        from .copilot_sdk_integration import CopilotSDKManager  # noqa: PLC0415
+
+        ClaudeResponse = _get_claude_response_class()
+
+        logger.info(
+            "Executing with Copilot SDK",
+            working_directory=str(working_directory),
+            session_id=session_id,
+            continue_session=continue_session,
+        )
+
+        sdk_manager = CopilotSDKManager(self.config)
+        try:
+            copilot_response = await sdk_manager.execute_command(
+                prompt=prompt,
+                working_directory=working_directory,
+                user_id=user_id,
+                session_id=session_id,
+                continue_session=continue_session,
+                stream_callback=stream_callback,
+            )
+        except Exception as sdk_error:
+            logger.warning(
+                "Copilot SDK failed, falling back to CLI",
+                error=str(sdk_error),
+            )
+            copilot_response = await self.execute_command(
+                prompt=prompt,
+                working_directory=working_directory,
+                session_id=session_id,
+                continue_session=continue_session,
+                stream_callback=stream_callback,
+            )
+
+        return ClaudeResponse(
+            content=copilot_response.content,
+            session_id=copilot_response.session_id,
+            cost=copilot_response.cost,
+            duration_ms=copilot_response.duration_ms,
+            num_turns=copilot_response.num_turns,
+            is_error=copilot_response.is_error,
+            error_type=copilot_response.error_type,
+            tools_used=copilot_response.tools_used,
+        )
 
     async def kill_all_processes(self) -> None:
         """Kill all active processes."""

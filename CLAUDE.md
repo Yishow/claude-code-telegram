@@ -6,11 +6,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Telegram bot providing remote access to Claude Code. Python 3.10+, built with Poetry, using `python-telegram-bot` for Telegram and `claude-agent-sdk` for Claude Code integration.
 
+## Package Manager (Fork-only: uv)
+
+This fork uses **uv** instead of Poetry. `pyproject.toml` has a `[project]` block (PEP 517 standard) that uv reads; the original `[tool.poetry]` block is kept for upstream compatibility but is not used by uv.
+
+**Rebuild venv from scratch:**
+```bash
+rm -rf .venv uv.lock
+uv sync --extra dev
+```
+
+**Never use `pip install` or `poetry install`** — always `uv sync`.
+
 ## Commands
 
 ```bash
-make dev              # Install all deps (including dev)
-make install          # Production deps only
+make dev              # uv sync --extra dev (install all deps including dev)
+make install          # uv sync (production deps only)
 make run              # Run the bot
 make run-debug        # Run with debug logging
 make test             # Run tests with coverage
@@ -18,10 +30,10 @@ make lint             # Black + isort + flake8 + mypy
 make format           # Auto-format with black + isort
 
 # Run a single test
-poetry run pytest tests/unit/test_config.py -k test_name -v
+uv run pytest tests/unit/test_config.py -k test_name -v --no-cov
 
 # Type checking only
-poetry run mypy src
+uv run mypy src
 ```
 
 ## Architecture
@@ -31,6 +43,17 @@ poetry run mypy src
 `ClaudeIntegration` (facade in `src/claude/facade.py`) wraps `ClaudeSDKManager` (`src/claude/sdk_integration.py`), which uses `claude-agent-sdk` with `ClaudeSDKClient` for async streaming. Session IDs come from Claude's `ResultMessage`, not generated locally.
 
 Sessions auto-resume: per user+directory, persisted in SQLite.
+
+### Copilot Provider (Fork-only)
+
+`ClaudeIntegration` supports a second provider: **GitHub Copilot**. Controlled by `DEFAULT_PROVIDER=copilot` (env) or `default_provider` in `Settings`.
+
+Provider dispatch is in `facade._execute()` — a single `if actual_provider == "copilot"` branch. All Copilot logic lives in:
+
+- `src/claude/copilot_integration.py` — `CopilotProcessManager` (CLI subprocess) + `execute_full()` (SDK→CLI fallback, returns `ClaudeResponse`)
+- `src/claude/copilot_sdk_integration.py` — `CopilotSDKManager` (github-copilot-sdk JSON-RPC)
+
+**Design rule:** keep `facade.py` changes minimal — only the dispatch branch. Copilot-specific logic must stay in `copilot_*.py` files so rebase conflicts with upstream are minimised.
 
 ### Request Flow
 
@@ -160,5 +183,7 @@ origin/main                  feat1──feat2──feat3  (your commits, always 
 | File / area | Resolution |
 |---|---|
 | upstream-only new files | auto-accepted via `-X theirs` |
-| Your feature files (e.g. `copilot_*.py`) | always keep your version |
-| Shared files (e.g. `facade.py`, `settings.py`) | manually merge: keep your logic, adopt upstream API changes |
+| Your feature files (`copilot_*.py`, `docs/`) | always keep your version |
+| Shared files (`facade.py`, `settings.py`, `main.py`) | manually merge: keep your logic, adopt upstream API changes |
+| `pyproject.toml` | keep `[project]` block (fork-only); adopt upstream `[tool.poetry]` changes |
+| `Makefile` | keep uv-based targets; adopt upstream new targets |

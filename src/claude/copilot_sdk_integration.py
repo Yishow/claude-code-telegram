@@ -15,7 +15,6 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 import structlog
-from copilot import CopilotClient, ResumeSessionConfig, SessionConfig
 
 from ..config.settings import Settings
 from .exceptions import ClaudeProcessError, ClaudeTimeoutError
@@ -63,6 +62,8 @@ class CopilotSDKManager:
         """Get or create the long-lived CopilotClient."""
         async with self._client_lock:
             if self._client is None:
+                from copilot import CopilotClient  # noqa: PLC0415
+
                 self._client = CopilotClient()
                 await self._client.start()
                 logger.info("CopilotClient started")
@@ -79,7 +80,7 @@ class CopilotSDKManager:
         model: Optional[str] = None,
     ) -> CopilotResponse:
         """Execute a prompt via Copilot SDK with full session management."""
-        from copilot import SessionConfig, ResumeSessionConfig
+        from copilot import ResumeSessionConfig, SessionConfig
 
         start_time = asyncio.get_event_loop().time()
         client = await self._get_client()
