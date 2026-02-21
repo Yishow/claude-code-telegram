@@ -193,6 +193,41 @@ class CopilotSDKManager:
 
             return {"answer": answer, "wasFreeform": allow_freeform}
 
+        # on_error_occurred hook — smart retry for rate-limit errors,
+        # immediate abort for non-recoverable errors.
+        async def _on_error_occurred(
+            hook_input: Any, _env: Any
+        ) -> Optional[Dict[str, Any]]:
+            error_msg: str = getattr(hook_input, "error", "") or ""
+            error_context: str = getattr(hook_input, "errorContext", "") or ""
+            recoverable: bool = bool(getattr(hook_input, "recoverable", False))
+
+            logger.warning(
+                "Copilot error hook triggered",
+                error=error_msg,
+                error_context=error_context,
+                recoverable=recoverable,
+            )
+
+            # Rate-limit errors: retry up to 3 times with SDK back-off
+            is_rate_limit = any(
+                kw in error_msg.lower()
+                for kw in ("rate limit", "rate_limit", "too many requests", "429")
+            )
+            if is_rate_limit:
+                return {"errorHandling": "retry", "retryCount": 3}
+
+            # Recoverable non-rate-limit errors (e.g. transient tool failure):
+            # skip the offending step and continue
+            if recoverable and error_context == "tool_execution":
+                return {"errorHandling": "skip"}
+
+            # Non-recoverable: abort and surface the error message to the user
+            return {
+                "errorHandling": "abort",
+                "userNotification": f"Copilot error ({error_context}): {error_msg}",
+            }
+
         # on_pre_tool_use hook — validates tool calls before execution using
         # the same ToolMonitor rules as the Claude SDK path.
         async def _on_pre_tool_use(
@@ -241,6 +276,7 @@ class CopilotSDKManager:
                 on_user_input_request=_on_user_input_request,
                 on_permission_request=_on_permission_request,
                 on_pre_tool_use=_on_pre_tool_use,
+                on_error_occurred=_on_error_occurred,
                 streaming=True,  # enables assistant.message_delta + reasoning_delta
                 **extra,
             )
