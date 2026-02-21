@@ -1,10 +1,10 @@
 .PHONY: install dev test lint format clean help run run-debug \
         run-remote remote-attach remote-stop \
-        sync sync-abort sync-continue \
-        status maintain
+        menu status feature-new sync-main repair-main sync sync-branch sync-abort sync-continue stash-pop \
+        maintain
 
 UPSTREAM_REPO := https://github.com/RichardAtCT/claude-code-telegram.git
-UPSTREAM_BRANCH := upstream/main
+FORK_WORKFLOW := scripts/fork_workflow.sh
 
 # ---------------------------------------------------------------------------
 # Help
@@ -22,14 +22,20 @@ help:
 	@echo "  format         Auto-format code (black + isort)"
 	@echo "  clean          Remove build artefacts and caches"
 	@echo ""
-	@echo "Upstream sync  (rebase your commits on top of upstream)"
+	@echo "Fork workflow (upstream sync)"
+	@echo "  menu           Open lazy menu (AUTO_YES=1 by default; set AUTO_YES=0 for prompts)"
 	@echo "  status         Show divergence from upstream"
-	@echo "  sync           Fetch upstream and rebase your commits onto it"
+	@echo "  feature-new    Create feature branch from latest main (NAME=<name>)"
+	@echo "  sync-main      Sync local main with upstream/main and push to origin/main"
+	@echo "  repair-main    Repair main private commits (reset main + switch to new feature/*)"
+	@echo "  sync           Sync main, then rebase current feature branch onto main"
+	@echo "  sync-branch    Rebase current feature branch onto local main"
 	@echo "  sync-abort     Abort an in-progress rebase"
 	@echo "  sync-continue  Continue after resolving rebase conflicts"
+	@echo "  stash-pop      Restore latest auto-stash created by workflow"
 	@echo ""
 	@echo "Maintenance"
-	@echo "  maintain       sync + dev + lint + test in one step"
+	@echo "  maintain       sync + dev + lint + test (fails fast)"
 	@echo ""
 	@echo "Remote (Mac Mini / SSH)"
 	@echo "  run-remote     Start bot in tmux on remote Mac (unlocks keychain)"
@@ -95,83 +101,46 @@ remote-stop:
 	tmux kill-session -t claude-bot
 
 # ---------------------------------------------------------------------------
-# Upstream sync  (rebase strategy — keeps your commits on top cleanly)
+# Fork workflow (safe upstream sync for fork maintainers)
 # ---------------------------------------------------------------------------
-
-# Guard: fail early if a rebase / merge is already in progress
-_guard-no-rebase:
-	@if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then \
-		echo "[ERROR] A rebase is already in progress."; \
-		echo "        Resolve conflicts, then run: make sync-continue"; \
-		echo "        Or abandon it with:          make sync-abort"; \
-		exit 1; \
-	fi
-	@if [ -f .git/MERGE_HEAD ]; then \
-		echo "[ERROR] A merge is in progress (possibly from a previous 'make sync')."; \
-		echo "        Resolve conflicts and commit, or run: git merge --abort"; \
-		exit 1; \
-	fi
+menu:  ## Open lazy menu for fork workflow
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) menu
 
 status:  ## Show divergence between your branch and upstream
-	@git remote get-url upstream 2>/dev/null || git remote add upstream $(UPSTREAM_REPO)
-	@git fetch upstream -q
-	@echo "=== Upstream vs your branch ==="
-	@git log --oneline $(UPSTREAM_BRANCH)..HEAD | head -20 | \
-		awk 'BEGIN{print "Your commits not in upstream:"} {print "  " $$0} END{if(NR==0)print "  (none — you are up to date)"}'
-	@git log --oneline HEAD..$(UPSTREAM_BRANCH) | head -20 | \
-		awk 'BEGIN{print "Upstream commits not in your branch:"} {print "  " $$0} END{if(NR==0)print "  (none)"}'
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) status
 
-sync: _guard-no-rebase  ## Rebase your commits onto upstream/main (auto-resolves upstream-only files)
-	@echo "=== Syncing with upstream (rebase) ==="
-	@git remote get-url upstream 2>/dev/null || git remote add upstream $(UPSTREAM_REPO)
-	git fetch upstream
-	@echo "[INFO] Rebasing onto $(UPSTREAM_BRANCH)..."
-	@if git rebase $(UPSTREAM_BRANCH) \
-	        -X theirs \
-	        --rebase-merges; then \
-		echo ""; \
-		echo "=== Sync done — your commits are now on top of upstream ==="; \
-		echo "Push with: git push --force-with-lease"; \
-	else \
-		echo ""; \
-		echo "[WARN] Rebase conflict in files that need manual review:"; \
-		git diff --name-only --diff-filter=U 2>/dev/null | sed 's/^/  /'; \
-		echo ""; \
-		echo "Steps to resolve:"; \
-		echo "  1. Edit the conflicted files above"; \
-		echo "  2. git add <resolved-files>"; \
-		echo "  3. make sync-continue"; \
-		echo "  Or give up: make sync-abort"; \
-		exit 1; \
-	fi
+feature-new:  ## Create feature branch from latest main (NAME=<feature-name> optional)
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) new-feature "$(NAME)"
+
+sync-main:  ## Sync local main from upstream/main and push to origin/main
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) sync-main
+
+repair-main:  ## Repair main by moving private commits to feature/* then reset main to upstream
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) repair-main "$(NAME)"
+
+sync:  ## Sync main and rebase current feature branch onto main
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) sync
+
+sync-branch:  ## Rebase current feature branch onto local main
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) sync-branch
 
 sync-abort:  ## Abort an in-progress rebase
-	git rebase --abort
-	@echo "Rebase aborted. Branch is back to its previous state."
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) sync-abort
 
 sync-continue:  ## Continue after manually resolving rebase conflicts
-	@if git diff --name-only --diff-filter=U 2>/dev/null | grep -q .; then \
-		echo "[ERROR] Unresolved conflicts remain in:"; \
-		git diff --name-only --diff-filter=U | sed 's/^/  /'; \
-		exit 1; \
-	fi
-	GIT_EDITOR=true git rebase --continue
-	@echo "=== Rebase step done ==="
-	@if [ -d .git/rebase-merge ] || [ -d .git/rebase-apply ]; then \
-		echo "Rebase still in progress — run 'make sync-continue' again if needed."; \
-	else \
-		echo "Rebase complete. Push with: git push --force-with-lease"; \
-	fi
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) sync-continue
+
+stash-pop:  ## Restore latest workflow auto-stash
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) stash-pop
 
 # ---------------------------------------------------------------------------
 # Maintenance
 # ---------------------------------------------------------------------------
 maintain:  ## sync + dev + lint + test in one step
-	@echo "=== 一鍵維護 ==="
+	@echo "=== Maintenance ==="
 	$(MAKE) sync
 	$(MAKE) dev
-	$(MAKE) lint   || echo "[WARN] Lint issues found — run 'make format' to auto-fix"
-	$(MAKE) test   || echo "[WARN] Tests failed"
+	$(MAKE) lint
+	$(MAKE) test
 	@echo ""
-	@echo "=== 維護完成 ==="
-	@echo "Push with: git push --force-with-lease"
+	@echo "=== Maintenance done ==="
