@@ -337,6 +337,14 @@ class MessageOrchestrator:
             )
         )
 
+        # perm: Approve/Deny for Copilot permission requests
+        app.add_handler(
+            CallbackQueryHandler(
+                self._inject_deps(self._permission_callback),
+                pattern=r"^perm:",
+            )
+        )
+
         logger.info("Agentic handlers registered")
 
     def _register_classic_handlers(self, app: Application) -> None:
@@ -677,10 +685,8 @@ class MessageOrchestrator:
                 question = update_obj.content or "Copilot needs more information:"
 
                 if future is not None and not future.done():
-                    # Store future so agentic_text can resolve it on next message
                     context.user_data["pending_ask_user"] = future
 
-                    # Build inline keyboard for predefined choices (if any)
                     reply_markup = None
                     if choices:
                         keyboard = [
@@ -694,6 +700,43 @@ class MessageOrchestrator:
                             f"❓ <b>Copilot asks:</b>\n{escape_html(question)}",
                             parse_mode="HTML",
                             reply_markup=reply_markup,
+                        )
+                    except Exception:
+                        pass
+                return
+
+            # --- permission_request: Copilot wants to perform a privileged action ---
+            if update_obj.type == "permission_request" and context is not None:
+                meta = update_obj.metadata or {}
+                future = meta.get("future")
+                kind = meta.get("kind") or update_obj.content or "unknown"
+
+                _PERM_ICONS = {
+                    "shell": "💻",
+                    "write": "✏️",
+                    "read": "📖",
+                    "mcp": "🔌",
+                    "url": "🌐",
+                }
+                icon = _PERM_ICONS.get(kind, "🔐")
+
+                if future is not None and not future.done():
+                    context.user_data["pending_permission"] = future
+
+                    keyboard = [[
+                        InlineKeyboardButton(
+                            "✅ Approve", callback_data=f"perm:approve:{kind}"
+                        ),
+                        InlineKeyboardButton(
+                            "❌ Deny", callback_data=f"perm:deny:{kind}"
+                        ),
+                    ]]
+                    try:
+                        await progress_msg.edit_text(
+                            f"{icon} <b>Permission request:</b> <code>{escape_html(kind)}</code>\n"
+                            "Allow Copilot to perform this action?",
+                            parse_mode="HTML",
+                            reply_markup=InlineKeyboardMarkup(keyboard),
                         )
                     except Exception:
                         pass
@@ -1230,6 +1273,40 @@ class MessageOrchestrator:
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
+
+    async def _permission_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle perm: inline button — resolve pending Copilot permission request."""
+        query = update.callback_query
+        await query.answer()
+
+        # data format: "perm:approve:<kind>" or "perm:deny:<kind>"
+        parts = (query.data or "").split(":", 2)
+        decision = parts[1] if len(parts) > 1 else "deny"
+        kind = parts[2] if len(parts) > 2 else "unknown"
+        approved = decision == "approve"
+
+        pending_future = context.user_data.get("pending_permission")
+        if pending_future is not None and not pending_future.done():
+            context.user_data.pop("pending_permission", None)
+            pending_future.set_result(approved)
+            logger.info(
+                "Resolved permission_request",
+                user_id=update.effective_user.id,
+                kind=kind,
+                approved=approved,
+            )
+            label = "✅ Approved" if approved else "❌ Denied"
+            try:
+                await query.edit_message_text(
+                    f"{label}: <code>{escape_html(kind)}</code>",
+                    parse_mode="HTML",
+                )
+            except Exception:
+                pass
+        else:
+            await query.answer("This request has already been resolved.")
 
     async def _ask_user_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
