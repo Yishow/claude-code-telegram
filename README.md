@@ -89,6 +89,7 @@ make run-debug    # With debug logging
 Message your bot on Telegram to get started.
 
 > **Detailed setup:** See [docs/setup.md](docs/setup.md) for Claude authentication options and troubleshooting.
+> **Linux persistent service:** See [SYSTEMD_SETUP.md](SYSTEMD_SETUP.md) (`make daemon-up`).
 
 ### 5. Fork Maintenance (Lazy Menu)
 

@@ -1,10 +1,12 @@
 .PHONY: install dev test lint format clean help run run-debug \
         run-remote remote-attach remote-stop \
+        daemon-up daemon-install daemon-start daemon-stop daemon-restart daemon-status daemon-logs daemon-down daemon-uninstall daemon-print daemon-linger \
         menu status feature-new sync-main repair-main sync sync-branch sync-abort sync-continue stash-pop \
         maintain
 
 UPSTREAM_REPO := https://github.com/RichardAtCT/claude-code-telegram.git
 FORK_WORKFLOW := scripts/fork_workflow.sh
+SYSTEMD_SERVICE := scripts/systemd_user_service.sh
 
 # ---------------------------------------------------------------------------
 # Help
@@ -41,6 +43,19 @@ help:
 	@echo "  run-remote     Start bot in tmux on remote Mac (unlocks keychain)"
 	@echo "  remote-attach  Attach to running bot tmux session"
 	@echo "  remote-stop    Stop the bot tmux session"
+	@echo ""
+	@echo "Daemon (Linux systemd --user)"
+	@echo "  daemon-up        One-click install + enable + restart + status"
+	@echo "  daemon-install   Install/update user service file"
+	@echo "  daemon-start     Start service"
+	@echo "  daemon-stop      Stop service"
+	@echo "  daemon-restart   Restart service"
+	@echo "  daemon-status    Show service status"
+	@echo "  daemon-logs      Tail logs"
+	@echo "  daemon-down      Stop + disable service"
+	@echo "  daemon-uninstall Remove user service file"
+	@echo "  daemon-print     Show generated service file"
+	@echo "  daemon-linger    Enable lingering (keeps running after logout)"
 
 # ---------------------------------------------------------------------------
 # Dependencies
@@ -99,6 +114,42 @@ remote-attach:
 
 remote-stop:
 	tmux kill-session -t claude-bot
+
+# ---------------------------------------------------------------------------
+# Daemon (Linux systemd --user)
+# ---------------------------------------------------------------------------
+daemon-up:
+	@bash $(SYSTEMD_SERVICE) up
+
+daemon-install:
+	@bash $(SYSTEMD_SERVICE) install
+
+daemon-start:
+	@bash $(SYSTEMD_SERVICE) start
+
+daemon-stop:
+	@bash $(SYSTEMD_SERVICE) stop
+
+daemon-restart:
+	@bash $(SYSTEMD_SERVICE) restart
+
+daemon-status:
+	@bash $(SYSTEMD_SERVICE) status
+
+daemon-logs:
+	@bash $(SYSTEMD_SERVICE) logs
+
+daemon-down:
+	@bash $(SYSTEMD_SERVICE) down
+
+daemon-uninstall:
+	@bash $(SYSTEMD_SERVICE) uninstall
+
+daemon-print:
+	@bash $(SYSTEMD_SERVICE) print
+
+daemon-linger:
+	@bash $(SYSTEMD_SERVICE) linger
 
 # ---------------------------------------------------------------------------
 # Fork workflow (safe upstream sync for fork maintainers)

@@ -1,148 +1,72 @@
-# Systemd User Service Setup
+# Systemd User Service Setup (One-Click)
 
-This guide shows how to run the Claude Code Telegram Bot as a persistent systemd user service.
+Run this project as a persistent Linux user service with one command.
 
-**⚠️ SECURITY NOTE:** Before setting up the service, ensure your `.env` file has `DEVELOPMENT_MODE=false` and `ENVIRONMENT=production` for secure operation.
-
-## Quick Setup
-
-### 1. Create the service file
+## Quick Start
 
 ```bash
-mkdir -p ~/.config/systemd/user
-nano ~/.config/systemd/user/claude-telegram-bot.service
+make daemon-up
 ```
 
-Add this content:
+This will:
 
-```ini
-[Unit]
-Description=Claude Code Telegram Bot
-After=network.target
+1. Generate `~/.config/systemd/user/claude-telegram-bot.service`
+2. Reload `systemd --user`
+3. Enable auto-start on login
+4. Restart service now
+5. Show service status
 
-[Service]
-Type=simple
-WorkingDirectory=/home/ubuntu/Code/oss/claude-code-telegram
-ExecStart=/home/ubuntu/.local/bin/poetry run claude-telegram-bot
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-
-# Environment
-Environment="PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin"
-
-[Install]
-WantedBy=default.target
-```
-
-**Note:** Update `WorkingDirectory` to your project path.
-
-### 2. Enable and start the service
+The generated service runs:
 
 ```bash
-# Reload systemd to recognize the new service
-systemctl --user daemon-reload
-
-# Enable auto-start on login
-systemctl --user enable claude-telegram-bot.service
-
-# Start the service now
-systemctl --user start claude-telegram-bot.service
+uv run claude-telegram-bot
 ```
 
-### 3. Verify it's running
-
-```bash
-systemctl --user status claude-telegram-bot
-```
-
-### 4. Verify secure configuration
-
-Check that the service is running in production mode:
-
-```bash
-# Check logs for environment mode
-journalctl --user -u claude-telegram-bot -n 50 | grep -i "environment\|development"
-
-# Should show:
-# "environment": "production"
-# "development_mode": false (implied, not shown if false)
-
-# Verify authentication is restricted
-journalctl --user -u claude-telegram-bot -n 50 | grep -i "auth"
-
-# Should show:
-# "allowed_users": 1 (or more if multiple users configured)
-# "allow_all_dev": false
-```
-
-If you see `allow_all_dev: true` or `environment: development`, **STOP THE SERVICE** and fix your `.env` file immediately.
+from your current project directory.
 
 ## Common Commands
 
 ```bash
-# Start service
-systemctl --user start claude-telegram-bot
-
-# Stop service
-systemctl --user stop claude-telegram-bot
-
-# Restart service
-systemctl --user restart claude-telegram-bot
-
-# View status
-systemctl --user status claude-telegram-bot
-
-# View live logs
-journalctl --user -u claude-telegram-bot -f
-
-# View recent logs (last 50 lines)
-journalctl --user -u claude-telegram-bot -n 50
-
-# Disable auto-start
-systemctl --user disable claude-telegram-bot
-
-# Enable auto-start
-systemctl --user enable claude-telegram-bot
+make daemon-status
+make daemon-logs
+make daemon-restart
+make daemon-stop
+make daemon-down
+make daemon-uninstall
+make daemon-print
 ```
 
-## Updating the Service
+## Keep Running After Logout
 
-After editing the service file:
+For some environments, user services stop when you log out. Enable lingering:
 
 ```bash
-systemctl --user daemon-reload
-systemctl --user restart claude-telegram-bot
+make daemon-linger
+```
+
+If it fails due to permissions, run:
+
+```bash
+sudo loginctl enable-linger $USER
 ```
 
 ## Troubleshooting
 
-**Service won't start:**
-```bash
-# Check logs for errors
-journalctl --user -u claude-telegram-bot -n 100
-
-# Verify paths in service file are correct
-systemctl --user cat claude-telegram-bot
-
-# Check that Poetry is installed
-poetry --version
-
-# Test the bot manually first
-cd /home/ubuntu/Code/oss/claude-code-telegram
-poetry run claude-telegram-bot
-```
-
-**Service stops after logout:**
-
-Enable lingering to keep user services running after logout:
+1. `systemd user session is unavailable`
+Run in a normal login shell, then try:
 ```bash
 loginctl enable-linger $USER
 ```
 
-## Files
+2. `uv not found`
+Install dependencies first:
+```bash
+make dev
+```
 
-- Service file: `~/.config/systemd/user/claude-telegram-bot.service`
-- Logs: View with `journalctl --user -u claude-telegram-bot`
-- Project: `/home/ubuntu/Code/oss/claude-code-telegram`
+3. Service starts but bot fails
+Check logs:
+```bash
+make daemon-logs
+```
+Verify `.env` exists and production settings are correct.
