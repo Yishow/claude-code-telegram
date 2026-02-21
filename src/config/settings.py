@@ -82,6 +82,14 @@ class Settings(BaseSettings):
         None, description="Path to Copilot CLI binary"
     )
     copilot_model: str = Field("gpt-5.3-codex", description="Copilot model to use")
+    copilot_infinite_sessions: bool = Field(
+        True,
+        description="Enable Copilot infinite sessions (auto context compaction)",
+    )
+    copilot_compaction_threshold: float = Field(
+        0.80,
+        description="Background compaction threshold (0.0-1.0) for infinite sessions",
+    )
     default_provider: str = Field(
         "claude", description="Default AI provider: claude or copilot"
     )
