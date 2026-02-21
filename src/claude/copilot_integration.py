@@ -286,6 +286,7 @@ class CopilotProcessManager:
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
         model: Optional[str] = None,
+        image_path: Optional[str] = None,
     ) -> Any:
         """Execute command using Copilot SDK (with CLI fallback). Returns ClaudeResponse."""
         from .copilot_sdk_integration import CopilotSDKManager  # noqa: PLC0415
@@ -325,12 +326,14 @@ class CopilotProcessManager:
                 continue_session=continue_session,
                 stream_callback=wrapped_callback,
                 model=model,
+                image_path=image_path,
             )
         except Exception as sdk_error:
             logger.warning(
                 "Copilot SDK failed, falling back to CLI",
                 error=str(sdk_error),
             )
+            # CLI fallback does not support image attachments — pass prompt only
             copilot_response = await self.execute_command(
                 prompt=prompt,
                 working_directory=working_directory,
