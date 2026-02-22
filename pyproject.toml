@@ -47,7 +47,7 @@ readme = "README.md"
 license = "MIT"
 packages = [{include = "src"}]
 authors = [
-    {name = "Richard Atkinson", email = "richardatk01@gmail.com"},
+    "Richard Atkinson <richardatk01@gmail.com>",
 ]
 keywords = ["telegram", "bot", "claude", "ai", "development", "remote", "coding"]
 classifiers = [

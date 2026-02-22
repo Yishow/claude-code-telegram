@@ -250,6 +250,13 @@ class Settings(BaseSettings):
     webhook_url: Optional[str] = Field(None, description="Webhook URL for bot")
     webhook_port: int = Field(8443, description="Webhook port")
     webhook_path: str = Field("/webhook", description="Webhook path")
+    telegram_webhook_secret_token: Optional[str] = Field(
+        None,
+        description=(
+            "Optional secret token used by Telegram webhook "
+            "(X-Telegram-Bot-Api-Secret-Token)"
+        ),
+    )
 
     # Agentic platform settings
     enable_api_server: bool = Field(False, description="Enable FastAPI webhook server")

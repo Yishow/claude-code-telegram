@@ -42,9 +42,10 @@ check_user_systemd() {
 }
 
 build_unit_content() {
-  local uv_bin path_env
+  local uv_bin path_env uv_cache_dir
   uv_bin="$(detect_uv_bin)"
   path_env="$(dirname "$uv_bin"):/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
+  uv_cache_dir="${UV_CACHE_DIR:-/tmp/.uv-cache}"
 
   cat <<EOF
 [Unit]
@@ -54,13 +55,14 @@ After=network.target
 [Service]
 Type=simple
 WorkingDirectory=${PROJECT_DIR}
-ExecStart=${uv_bin} run claude-telegram-bot
+ExecStart=${uv_bin} run --no-sync claude-telegram-bot
 Restart=always
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
 Environment=PATH=${path_env}
 Environment=PYTHONUNBUFFERED=1
+Environment=UV_CACHE_DIR=${uv_cache_dir}
 
 [Install]
 WantedBy=default.target

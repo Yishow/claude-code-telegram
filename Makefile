@@ -1,4 +1,5 @@
 .PHONY: install dev test lint format clean help run run-debug \
+        webhook-check \
         run-remote remote-attach remote-stop \
         daemon-up daemon-install daemon-start daemon-stop daemon-restart daemon-status daemon-logs daemon-down daemon-uninstall daemon-print daemon-linger \
         menu status feature-new sync-main repair-main sync sync-branch sync-abort sync-continue stash-pop copilot-release-delta \
@@ -23,6 +24,7 @@ help:
 	@echo "  dev            Install development dependencies"
 	@echo "  run            Run the bot"
 	@echo "  run-debug      Run with debug logging"
+	@echo "  webhook-check  Validate webhook-related env and print setup checklist"
 	@echo "  test           Run tests"
 	@echo "  lint           Run linting checks (black / isort / flake8)"
 	@echo "  format         Auto-format code (black + isort)"
@@ -105,6 +107,9 @@ run:
 
 run-debug:
 	$(UV_RUN) claude-telegram-bot --debug
+
+webhook-check:
+	@bash scripts/webhook_preflight.sh
 
 # ---------------------------------------------------------------------------
 # Remote (Mac Mini)

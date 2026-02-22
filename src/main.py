@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import re
 import signal
 import sys
 from pathlib import Path
@@ -38,6 +39,31 @@ from src.security.validators import SecurityValidator
 from src.storage.facade import Storage
 from src.storage.session_storage import SQLiteSessionStorage
 
+_TELEGRAM_BOT_TOKEN_URL_RE = re.compile(
+    r"(https?://api\.telegram\.org/bot)[^/\s\"']+",
+    flags=re.IGNORECASE,
+)
+
+
+def _redact_telegram_bot_token(text: str) -> str:
+    """Redact Telegram bot token in URLs to avoid accidental secret leakage."""
+    return _TELEGRAM_BOT_TOKEN_URL_RE.sub(r"\1***REDACTED***", text)
+
+
+class _SensitiveLogFilter(logging.Filter):
+    """Filter that redacts sensitive tokens from log records."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            rendered = record.getMessage()
+        except Exception:
+            return True
+        redacted = _redact_telegram_bot_token(rendered)
+        if redacted != rendered:
+            record.msg = redacted
+            record.args = ()
+        return True
+
 
 def setup_logging(debug: bool = False) -> None:
     """Configure structured logging."""
@@ -49,6 +75,18 @@ def setup_logging(debug: bool = False) -> None:
         format="%(message)s",
         stream=sys.stdout,
     )
+
+    # Redact sensitive tokens from all standard-logging handlers.
+    root_logger = logging.getLogger()
+    sensitive_filter = _SensitiveLogFilter()
+    for handler in root_logger.handlers:
+        handler.addFilter(sensitive_filter)
+
+    # Polling mode can emit verbose per-request HTTP logs.
+    # Keep them in debug mode only.
+    if not debug:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
+        logging.getLogger("httpcore").setLevel(logging.WARNING)
 
     # Configure structlog
     structlog.configure(

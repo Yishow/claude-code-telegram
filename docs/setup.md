@@ -104,6 +104,14 @@ make run          # Production
 3. Try asking Claude a question about your project
 4. Use `/status` to check session info
 
+### 8. Optional: Switch Telegram Delivery to Webhook
+
+If you want to avoid polling logs and reduce idle API requests:
+
+1. Set `WEBHOOK_URL` in `.env`
+2. Run `make webhook-check`
+3. Follow `docs/telegram-webhook.md` for Nginx/Caddy examples
+
 ## Agentic Platform Setup
 
 The bot includes an event-driven platform for webhooks, scheduled jobs, and proactive notifications. All features are disabled by default.

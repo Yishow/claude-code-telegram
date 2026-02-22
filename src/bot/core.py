@@ -191,14 +191,19 @@ class ClaudeCodeBot:
 
             if self.settings.webhook_url:
                 # Webhook mode
-                await self.app.run_webhook(
-                    listen="0.0.0.0",
-                    port=self.settings.webhook_port,
-                    url_path=self.settings.webhook_path,
-                    webhook_url=self.settings.webhook_url,
-                    drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES,
-                )
+                webhook_kwargs: Dict[str, Any] = {
+                    "listen": "0.0.0.0",
+                    "port": self.settings.webhook_port,
+                    "url_path": self.settings.webhook_path,
+                    "webhook_url": self.settings.webhook_url,
+                    "drop_pending_updates": True,
+                    "allowed_updates": Update.ALL_TYPES,
+                }
+                if self.settings.telegram_webhook_secret_token:
+                    webhook_kwargs["secret_token"] = (
+                        self.settings.telegram_webhook_secret_token
+                    )
+                await self.app.run_webhook(**webhook_kwargs)
             else:
                 # Polling mode - initialize and start polling manually
                 await self.app.initialize()

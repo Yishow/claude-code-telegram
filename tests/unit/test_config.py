@@ -45,6 +45,21 @@ def test_settings_with_valid_data(tmp_path):
     assert settings.approved_directory == test_dir
 
 
+def test_webhook_secret_token_setting(tmp_path):
+    """Webhook secret token can be configured."""
+    test_dir = tmp_path / "projects"
+    test_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(test_dir),
+        telegram_webhook_secret_token="very-secret-token",
+    )
+
+    assert settings.telegram_webhook_secret_token == "very-secret-token"
+
+
 def test_allowed_users_parsing():
     """Test parsing of comma-separated user IDs."""
     with tempfile.TemporaryDirectory() as tmp_dir:

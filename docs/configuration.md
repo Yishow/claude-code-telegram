@@ -251,6 +251,9 @@ WEBHOOK_PORT=8443
 
 # Webhook path
 WEBHOOK_PATH=/webhook
+
+# Optional secret header verification for Telegram webhook
+TELEGRAM_WEBHOOK_SECRET_TOKEN=
 ```
 
 ## Environment-Specific Configuration

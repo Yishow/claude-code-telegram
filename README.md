@@ -88,6 +88,9 @@ make run-debug    # With debug logging
 
 Message your bot on Telegram to get started.
 
+To avoid polling mode, set `WEBHOOK_URL` in `.env` (see `docs/configuration.md`).
+For step-by-step rollout with Nginx/Caddy examples, see `docs/telegram-webhook.md`.
+
 > **Detailed setup:** See [docs/setup.md](docs/setup.md) for Claude authentication options and troubleshooting.
 > **Linux persistent service:** See [SYSTEMD_SETUP.md](SYSTEMD_SETUP.md) (`make daemon-up`).
 
