@@ -24,6 +24,7 @@ from src.events.bus import EventBus
 from src.events.handlers import AgentHandler
 from src.events.middleware import EventSecurityMiddleware
 from src.exceptions import ConfigurationError
+from src.memory import MemoryService
 from src.notifications.service import NotificationService
 from src.projects import ProjectThreadManager, load_project_registry
 from src.scheduler.scheduler import JobScheduler
@@ -188,6 +189,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         session_manager=session_manager,
         default_provider=config.default_provider,
     )
+    memory_service = MemoryService(config, storage)
 
     # --- Event bus and agentic platform components ---
     event_bus = EventBus()
@@ -216,6 +218,7 @@ async def create_application(config: Settings) -> Dict[str, Any]:
         "rate_limiter": rate_limiter,
         "audit_logger": audit_logger,
         "claude_integration": claude_integration,
+        "memory_service": memory_service,
         "storage": storage,
         "event_bus": event_bus,
         "project_registry": None,

@@ -20,6 +20,12 @@ from ..copilot_runtime import (
     SESSION_PROVIDER_KEY,
     get_runtime_snapshot,
 )
+from ..memory_ui import (
+    build_memory_keyboard,
+    format_memory_status,
+    resolve_toggle_field,
+    scope_from_update,
+)
 from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -125,6 +131,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• <code>/cd &lt;dir&gt;</code> - Change directory\n"
         f"• <code>/projects</code> - Show available projects\n"
         f"• <code>/status</code> - Show session status\n"
+        f"• <code>/memory</code> - Memory system controls\n"
         f"• <code>/actions</code> - Show quick actions\n"
         f"• <code>/git</code> - Git repository commands\n\n"
         f"<b>Quick Start:</b>\n"
@@ -176,6 +183,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/continue [message]</code> - Explicitly continue last session\n"
         "• <code>/end</code> - End current session and clear context\n"
         "• <code>/status</code> - Show session and usage status\n"
+        "• <code>/memory</code> - Memory system controls\n"
         "• <code>/export</code> - Export session history\n"
         "• <code>/actions</code> - Show context-aware quick actions\n"
         "• <code>/git</code> - Git repository information\n\n"
@@ -955,6 +963,7 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
             InlineKeyboardButton("🔄 Refresh", callback_data="action:refresh_status"),
         ]
     )
+    keyboard.append([InlineKeyboardButton("🧠 Memory", callback_data="memory:panel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -1029,6 +1038,110 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         context.user_data[SESSION_MODEL_KEY] = requested
         msg = f"Model switched to <code>{escape_html(requested)}</code>"
     await update.message.reply_text(msg, parse_mode="HTML")
+
+
+def _memory_usage_text() -> str:
+    """Return memory command usage text."""
+    return (
+        "Usage:\n"
+        "• <code>/memory</code> - show current memory settings\n"
+        "• <code>/memory on|off</code> - toggle memory_system_plus\n"
+        "• <code>/memory profile fast|balanced|quality</code>\n"
+        "• <code>/memory toggle system|hooks|pre|post|ai|extractor|reranker|conflict|periodic</code>"
+    )
+
+
+async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /memory runtime controls and status."""
+    memory_service = context.bot_data.get("memory_service")
+    audit_logger: AuditLogger = context.bot_data.get("audit_logger")
+    user_id = update.effective_user.id if update.effective_user else 0
+    args = [arg.strip() for arg in (context.args or []) if arg.strip()]
+    success = False
+
+    if not memory_service:
+        await update.message.reply_text(
+            "❌ <b>Memory service unavailable</b>\n\n"
+            "The memory system is not initialized on this bot instance.",
+            parse_mode="HTML",
+        )
+        return
+
+    scope_user_id, scope_chat_id, scope_thread_id = scope_from_update(update)
+
+    try:
+        runtime = await memory_service.get_runtime_settings(
+            user_id=scope_user_id,
+            chat_id=scope_chat_id,
+            message_thread_id=scope_thread_id,
+        )
+
+        if args:
+            action = args[0].lower()
+            if action in {"on", "off"}:
+                runtime = await memory_service.update_runtime_settings(
+                    user_id=scope_user_id,
+                    chat_id=scope_chat_id,
+                    message_thread_id=scope_thread_id,
+                    patch={"memory_system_plus_enabled": action == "on"},
+                    actor_user_id=user_id,
+                    source="telegram_command",
+                )
+            elif action == "profile":
+                if len(args) < 2:
+                    raise ValueError(_memory_usage_text())
+                runtime = await memory_service.set_runtime_profile(
+                    user_id=scope_user_id,
+                    chat_id=scope_chat_id,
+                    message_thread_id=scope_thread_id,
+                    profile=args[1],
+                    actor_user_id=user_id,
+                    source="telegram_command",
+                )
+            elif action == "toggle":
+                if len(args) < 2:
+                    raise ValueError(_memory_usage_text())
+                field = resolve_toggle_field(args[1])
+                if not field:
+                    raise ValueError(_memory_usage_text())
+                runtime = await memory_service.toggle_runtime_setting(
+                    user_id=scope_user_id,
+                    chat_id=scope_chat_id,
+                    message_thread_id=scope_thread_id,
+                    field=field,
+                    actor_user_id=user_id,
+                    source="telegram_command",
+                )
+            elif action != "status":
+                raise ValueError(_memory_usage_text())
+
+        metrics = await memory_service.get_metrics_summary(hours=24)
+        await update.message.reply_text(
+            format_memory_status(runtime, metrics_24h=metrics),
+            parse_mode="HTML",
+            reply_markup=build_memory_keyboard(runtime),
+        )
+        success = True
+    except ValueError as exc:
+        await update.message.reply_text(
+            f"❌ <b>Invalid memory command</b>\n\n{escape_html(str(exc))}",
+            parse_mode="HTML",
+        )
+    except Exception as exc:
+        logger.error("Memory command failed", error=str(exc), user_id=user_id)
+        await update.message.reply_text(
+            "❌ <b>Memory command failed</b>\n\n"
+            "Please try again or use <code>/memory</code> to refresh status.",
+            parse_mode="HTML",
+        )
+    finally:
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=user_id,
+                command="memory",
+                args=args,
+                success=success,
+            )
 
 
 async def copilot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

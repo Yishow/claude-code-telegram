@@ -12,6 +12,12 @@ from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.validators import SecurityValidator
 from ..copilot_runtime import get_runtime_snapshot
+from ..memory_ui import (
+    build_memory_keyboard,
+    format_memory_status,
+    resolve_toggle_field,
+    scope_from_query,
+)
 from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -69,6 +75,7 @@ async def handle_callback_query(
             "export": handle_export_callback,
             "ask_user": handle_ask_user_callback,
             "perm": handle_permission_callback,
+            "memory": handle_memory_callback,
         }
 
         handler = handlers.get(action)
@@ -293,8 +300,14 @@ async def handle_confirm_callback(
 def _extract_callback_scope(query) -> tuple[int, int, Optional[int]]:
     """Extract interaction scope from callback query."""
     user_id = query.from_user.id if query and query.from_user else 0
-    chat_id = query.message.chat.id if query and query.message and query.message.chat else 0
-    message_thread_id = getattr(query.message, "message_thread_id", None) if query and query.message else None
+    chat_id = (
+        query.message.chat.id if query and query.message and query.message.chat else 0
+    )
+    message_thread_id = (
+        getattr(query.message, "message_thread_id", None)
+        if query and query.message
+        else None
+    )
     if not isinstance(message_thread_id, int):
         message_thread_id = None
     return user_id, chat_id, message_thread_id
@@ -310,7 +323,9 @@ async def handle_permission_callback(
     approved = decision == "approve"
 
     claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
-    bridge = getattr(getattr(claude_integration, "copilot_manager", None), "interaction_bridge", None)
+    bridge = getattr(
+        getattr(claude_integration, "copilot_manager", None), "interaction_bridge", None
+    )
     if not bridge or not interaction_id:
         await query.answer("Interaction bridge unavailable.")
         return
@@ -346,7 +361,9 @@ async def handle_ask_user_callback(
     choice_index = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
 
     claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
-    bridge = getattr(getattr(claude_integration, "copilot_manager", None), "interaction_bridge", None)
+    bridge = getattr(
+        getattr(claude_integration, "copilot_manager", None), "interaction_bridge", None
+    )
     if not bridge or not interaction_id:
         await query.answer("Interaction bridge unavailable.")
         return
@@ -376,6 +393,74 @@ async def handle_ask_user_callback(
 
     context.user_data.pop("pending_ask_user_interaction_id", None)
     await query.edit_message_reply_markup(reply_markup=None)
+
+
+async def handle_memory_callback(
+    query, payload: str, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Handle memory runtime toggle callbacks."""
+    memory_service = context.bot_data.get("memory_service")
+    if not memory_service:
+        await query.edit_message_text(
+            "❌ <b>Memory service unavailable</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    user_id, chat_id, message_thread_id = scope_from_query(query)
+    payload_parts = [part for part in (payload or "panel").split(":") if part]
+
+    try:
+        runtime = await memory_service.get_runtime_settings(
+            user_id=user_id,
+            chat_id=chat_id,
+            message_thread_id=message_thread_id,
+        )
+
+        if payload_parts and payload_parts[0] != "panel":
+            if payload_parts[0] == "toggle" and len(payload_parts) >= 2:
+                field = resolve_toggle_field(payload_parts[1])
+                if not field:
+                    raise ValueError("Unsupported toggle target")
+                runtime = await memory_service.toggle_runtime_setting(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    field=field,
+                    actor_user_id=user_id,
+                    source="telegram_callback",
+                )
+            elif payload_parts[0] == "profile" and len(payload_parts) >= 2:
+                runtime = await memory_service.set_runtime_profile(
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    profile=payload_parts[1],
+                    actor_user_id=user_id,
+                    source="telegram_callback",
+                )
+            else:
+                raise ValueError("Unsupported memory callback payload")
+
+        metrics = await memory_service.get_metrics_summary(hours=24)
+        await query.edit_message_text(
+            format_memory_status(runtime, metrics_24h=metrics),
+            parse_mode="HTML",
+            reply_markup=build_memory_keyboard(runtime),
+        )
+    except ValueError:
+        await query.answer("Invalid memory action")
+    except Exception as exc:
+        logger.error(
+            "Memory callback failed",
+            error=str(exc),
+            user_id=user_id,
+            payload=payload,
+        )
+        await query.edit_message_text(
+            "❌ <b>Memory action failed</b>\n\nPlease run <code>/memory</code> again.",
+            parse_mode="HTML",
+        )
 
 
 # Action handlers
@@ -802,6 +887,7 @@ async def _handle_status_action(query, context: ContextTypes.DEFAULT_TYPE) -> No
             InlineKeyboardButton("📁 Projects", callback_data="action:show_projects"),
         ]
     )
+    keyboard.append([InlineKeyboardButton("🧠 Memory", callback_data="memory:panel")])
 
     reply_markup = InlineKeyboardMarkup(keyboard)
 

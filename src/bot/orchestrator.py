@@ -389,6 +389,7 @@ class MessageOrchestrator:
             ("new", self.agentic_new),
             ("status", self.agentic_status),
             ("verbose", self.agentic_verbose),
+            ("memory", self.agentic_memory),
             ("repo", self.agentic_repo),
             ("model", self.agentic_model),
         ]
@@ -428,6 +429,12 @@ class MessageOrchestrator:
                 pattern=r"^cd:",
             )
         )
+        app.add_handler(
+            CallbackQueryHandler(
+                self._inject_deps(self._agentic_memory_callback),
+                pattern=r"^memory:",
+            )
+        )
 
         # ask_user: inline button choices from Copilot mid-execution questions
         app.add_handler(
@@ -462,6 +469,7 @@ class MessageOrchestrator:
             ("pwd", command.print_working_directory),
             ("projects", command.show_projects),
             ("status", command.session_status),
+            ("memory", command.memory_command),
             ("provider", command.provider_command),
             ("model", command.model_command),
             ("copilot", command.copilot_command),
@@ -506,6 +514,7 @@ class MessageOrchestrator:
                 BotCommand("new", "Start a fresh session"),
                 BotCommand("status", "Show session status"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
+                BotCommand("memory", "Memory system controls"),
                 BotCommand("repo", "List repos / switch workspace"),
                 BotCommand("model", "Switch AI model (Copilot provider)"),
             ]
@@ -524,6 +533,7 @@ class MessageOrchestrator:
                 BotCommand("pwd", "Show current directory"),
                 BotCommand("projects", "Show all projects"),
                 BotCommand("status", "Show session status"),
+                BotCommand("memory", "Memory system controls"),
                 BotCommand("provider", "Switch provider (claude/copilot)"),
                 BotCommand("model", "Switch Copilot model"),
                 BotCommand("copilot", "Copilot status/control commands"),
@@ -586,7 +596,7 @@ class MessageOrchestrator:
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — I can read, write, and run code.\n\n"
             f"Working in: {dir_display}\n"
-            f"Commands: /new (reset) · /status · /provider · /copilot"
+            f"Commands: /new (reset) · /status · /memory · /provider · /copilot"
             f"{sync_line}",
             parse_mode="HTML",
         )
@@ -675,6 +685,14 @@ class MessageOrchestrator:
             f"Verbosity set to <b>{level}</b> ({labels[level]})",
             parse_mode="HTML",
         )
+
+    async def agentic_memory(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Memory runtime controls command (shared with classic handler)."""
+        from .handlers import command  # noqa: PLC0415
+
+        await command.memory_command(update, context)
 
     async def agentic_model(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1042,6 +1060,9 @@ class MessageOrchestrator:
         """Direct Claude passthrough. Simple progress. No suggestions."""
         user_id = update.effective_user.id
         message_text = update.message.text
+        raw_prompt = message_text
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        message_thread_id = self._extract_message_thread_id(update)
 
         # --- ask_user freeform: consume next message if interaction is pending ---
         bridge = self._get_interaction_bridge(context)
@@ -1097,6 +1118,8 @@ class MessageOrchestrator:
         current_dir = context.user_data.get(
             "current_directory", self.settings.approved_directory
         )
+        if not isinstance(current_dir, Path):
+            current_dir = Path(current_dir)
         session_id = context.user_data.get("claude_session_id")
 
         # Check if /new was used — skip auto-resume for this first message.
@@ -1111,28 +1134,54 @@ class MessageOrchestrator:
         )
 
         controls = consume_request_controls(self.settings, context.user_data)
+        effective_prompt = message_text
+        effective_controls = controls
+        memory_runtime_settings = None
+        memory_service = context.bot_data.get("memory_service")
+        if memory_service:
+            try:
+                pre_hook_result = await memory_service.apply_pre_hook(
+                    prompt=message_text,
+                    controls=controls,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    project_path=current_dir,
+                )
+                effective_prompt = pre_hook_result.prompt
+                effective_controls = pre_hook_result.controls
+                memory_runtime_settings = pre_hook_result.runtime_settings
+            except Exception as memory_error:
+                logger.warning(
+                    "Memory pre-hook failed, using original prompt",
+                    user_id=user_id,
+                    error=str(memory_error),
+                )
 
         # Independent typing heartbeat — stays alive even with no stream events
         heartbeat = self._start_typing_heartbeat(chat)
 
         success = True
+        request_started_at = time.time()
+        response_content = ""
+        response_session_id = session_id
         try:
             claude_response = await claude_integration.run_command(
-                prompt=message_text,
+                prompt=effective_prompt,
                 working_directory=current_dir,
                 user_id=user_id,
-                chat_id=update.effective_chat.id if update.effective_chat else 0,
-                message_thread_id=self._extract_message_thread_id(update),
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
-                provider=controls["provider"],
-                copilot_model=controls["copilot_model"],
-                reasoning_effort=controls["reasoning_effort"],
-                skill_directories=controls["skill_directories"],
-                disabled_skills=controls["disabled_skills"],
-                mcp_env_value_mode=controls["mcp_env_value_mode"],
-                external_cli_server=controls["external_cli_server"],
+                provider=effective_controls["provider"],
+                copilot_model=effective_controls["copilot_model"],
+                reasoning_effort=effective_controls["reasoning_effort"],
+                skill_directories=effective_controls["skill_directories"],
+                disabled_skills=effective_controls["disabled_skills"],
+                mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
+                external_cli_server=effective_controls["external_cli_server"],
             )
 
             # New session created successfully — clear the one-shot flag
@@ -1140,6 +1189,8 @@ class MessageOrchestrator:
                 context.user_data["force_new_session"] = False
 
             context.user_data["claude_session_id"] = claude_response.session_id
+            response_content = claude_response.content
+            response_session_id = claude_response.session_id
 
             # Track directory changes
             from .handlers.message import _update_working_directory_from_claude_response
@@ -1181,6 +1232,29 @@ class MessageOrchestrator:
             ]
         finally:
             heartbeat.cancel()
+            if memory_service:
+                try:
+                    await memory_service.apply_post_hook(
+                        prompt=raw_prompt,
+                        response=response_content,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        project_path=current_dir,
+                        source_session_id=response_session_id,
+                        source_message_id=(
+                            update.message.message_id if update.message else None
+                        ),
+                        runtime_settings=memory_runtime_settings,
+                        success=success,
+                        elapsed_ms=int((time.time() - request_started_at) * 1000),
+                    )
+                except Exception as memory_error:
+                    logger.warning(
+                        "Memory post-hook failed",
+                        user_id=user_id,
+                        error=str(memory_error),
+                    )
 
         await progress_msg.delete()
 
@@ -1308,7 +1382,11 @@ class MessageOrchestrator:
         current_dir = context.user_data.get(
             "current_directory", self.settings.approved_directory
         )
+        if not isinstance(current_dir, Path):
+            current_dir = Path(current_dir)
         session_id = context.user_data.get("claude_session_id")
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        message_thread_id = self._extract_message_thread_id(update)
 
         # Check if /new was used — skip auto-resume for this first message.
         # Flag is only cleared after a successful run so retries keep the intent.
@@ -1320,31 +1398,61 @@ class MessageOrchestrator:
             verbose_level, progress_msg, tool_log, time.time(), context=context
         )
         controls = consume_request_controls(self.settings, context.user_data)
+        raw_prompt = prompt
+        effective_prompt = prompt
+        effective_controls = controls
+        memory_runtime_settings = None
+        memory_service = context.bot_data.get("memory_service")
+        if memory_service:
+            try:
+                pre_hook_result = await memory_service.apply_pre_hook(
+                    prompt=prompt,
+                    controls=controls,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    project_path=current_dir,
+                )
+                effective_prompt = pre_hook_result.prompt
+                effective_controls = pre_hook_result.controls
+                memory_runtime_settings = pre_hook_result.runtime_settings
+            except Exception as memory_error:
+                logger.warning(
+                    "Memory pre-hook failed for document",
+                    user_id=user_id,
+                    error=str(memory_error),
+                )
 
         heartbeat = self._start_typing_heartbeat(chat)
+        success = True
+        request_started_at = time.time()
+        response_content = ""
+        response_session_id = session_id
         try:
             claude_response = await claude_integration.run_command(
-                prompt=prompt,
+                prompt=effective_prompt,
                 working_directory=current_dir,
                 user_id=user_id,
-                chat_id=update.effective_chat.id if update.effective_chat else 0,
-                message_thread_id=self._extract_message_thread_id(update),
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
-                provider=controls["provider"],
-                copilot_model=controls["copilot_model"],
-                reasoning_effort=controls["reasoning_effort"],
-                skill_directories=controls["skill_directories"],
-                disabled_skills=controls["disabled_skills"],
-                mcp_env_value_mode=controls["mcp_env_value_mode"],
-                external_cli_server=controls["external_cli_server"],
+                provider=effective_controls["provider"],
+                copilot_model=effective_controls["copilot_model"],
+                reasoning_effort=effective_controls["reasoning_effort"],
+                skill_directories=effective_controls["skill_directories"],
+                disabled_skills=effective_controls["disabled_skills"],
+                mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
+                external_cli_server=effective_controls["external_cli_server"],
             )
 
             if force_new:
                 context.user_data["force_new_session"] = False
 
             context.user_data["claude_session_id"] = claude_response.session_id
+            response_content = claude_response.content
+            response_session_id = claude_response.session_id
 
             from .handlers.message import _update_working_directory_from_claude_response
 
@@ -1372,12 +1480,36 @@ class MessageOrchestrator:
                     await asyncio.sleep(0.5)
 
         except Exception as e:
+            success = False
             from .handlers.message import _format_error_message
 
             await progress_msg.edit_text(_format_error_message(e), parse_mode="HTML")
             logger.error("Claude file processing failed", error=str(e), user_id=user_id)
         finally:
             heartbeat.cancel()
+            if memory_service:
+                try:
+                    await memory_service.apply_post_hook(
+                        prompt=raw_prompt,
+                        response=response_content,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        project_path=current_dir,
+                        source_session_id=response_session_id,
+                        source_message_id=(
+                            update.message.message_id if update.message else None
+                        ),
+                        runtime_settings=memory_runtime_settings,
+                        success=success,
+                        elapsed_ms=int((time.time() - request_started_at) * 1000),
+                    )
+                except Exception as memory_error:
+                    logger.warning(
+                        "Memory post-hook failed for document",
+                        user_id=user_id,
+                        error=str(memory_error),
+                    )
 
     async def agentic_photo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1416,17 +1548,45 @@ class MessageOrchestrator:
             current_dir = context.user_data.get(
                 "current_directory", self.settings.approved_directory
             )
+            if not isinstance(current_dir, Path):
+                current_dir = Path(current_dir)
             session_id = context.user_data.get("claude_session_id")
+            chat_id = update.effective_chat.id if update.effective_chat else 0
+            message_thread_id = self._extract_message_thread_id(update)
 
             # Check if /new was used — skip auto-resume for this first message.
             # Flag is only cleared after a successful run so retries keep the intent.
             force_new = bool(context.user_data.get("force_new_session"))
             controls = consume_request_controls(self.settings, context.user_data)
+            raw_prompt = processed_image.prompt
+            effective_prompt = raw_prompt
+            effective_controls = controls
+            memory_runtime_settings = None
+            memory_service = context.bot_data.get("memory_service")
+            if memory_service:
+                try:
+                    pre_hook_result = await memory_service.apply_pre_hook(
+                        prompt=raw_prompt,
+                        controls=controls,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        project_path=current_dir,
+                    )
+                    effective_prompt = pre_hook_result.prompt
+                    effective_controls = pre_hook_result.controls
+                    memory_runtime_settings = pre_hook_result.runtime_settings
+                except Exception as memory_error:
+                    logger.warning(
+                        "Memory pre-hook failed for photo",
+                        user_id=user_id,
+                        error=str(memory_error),
+                    )
 
             # For the Copilot provider, write image to a tmp file so it can be
             # passed as a file attachment in send_and_wait.
             image_path: Optional[str] = None
-            if controls["provider"] == "copilot":
+            if effective_controls["provider"] == "copilot":
                 fmt = (
                     processed_image.metadata.get("format", "png")
                     if processed_image.metadata
@@ -1451,27 +1611,59 @@ class MessageOrchestrator:
             )
 
             heartbeat = self._start_typing_heartbeat(chat)
+            success = True
+            request_started_at = time.time()
+            response_content = ""
+            response_session_id = session_id
             try:
                 claude_response = await claude_integration.run_command(
-                    prompt=processed_image.prompt,
+                    prompt=effective_prompt,
                     working_directory=current_dir,
                     user_id=user_id,
-                    chat_id=update.effective_chat.id if update.effective_chat else 0,
-                    message_thread_id=self._extract_message_thread_id(update),
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
                     session_id=session_id,
                     on_stream=on_stream,
                     force_new=force_new,
-                    provider=controls["provider"],
-                    copilot_model=controls["copilot_model"],
-                    reasoning_effort=controls["reasoning_effort"],
-                    skill_directories=controls["skill_directories"],
-                    disabled_skills=controls["disabled_skills"],
-                    mcp_env_value_mode=controls["mcp_env_value_mode"],
-                    external_cli_server=controls["external_cli_server"],
+                    provider=effective_controls["provider"],
+                    copilot_model=effective_controls["copilot_model"],
+                    reasoning_effort=effective_controls["reasoning_effort"],
+                    skill_directories=effective_controls["skill_directories"],
+                    disabled_skills=effective_controls["disabled_skills"],
+                    mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
+                    external_cli_server=effective_controls["external_cli_server"],
                     image_path=image_path,
                 )
+                response_content = claude_response.content
+                response_session_id = claude_response.session_id
+            except Exception:
+                success = False
+                raise
             finally:
                 heartbeat.cancel()
+                if memory_service:
+                    try:
+                        await memory_service.apply_post_hook(
+                            prompt=raw_prompt,
+                            response=response_content,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            message_thread_id=message_thread_id,
+                            project_path=current_dir,
+                            source_session_id=response_session_id,
+                            source_message_id=(
+                                update.message.message_id if update.message else None
+                            ),
+                            runtime_settings=memory_runtime_settings,
+                            success=success,
+                            elapsed_ms=int((time.time() - request_started_at) * 1000),
+                        )
+                    except Exception as memory_error:
+                        logger.warning(
+                            "Memory post-hook failed for photo",
+                            user_id=user_id,
+                            error=str(memory_error),
+                        )
 
             if force_new:
                 context.user_data["force_new_session"] = False
@@ -1498,6 +1690,7 @@ class MessageOrchestrator:
                     await asyncio.sleep(0.5)
 
         except Exception as e:
+            success = False
             from .handlers.message import _format_error_message
 
             await progress_msg.edit_text(_format_error_message(e), parse_mode="HTML")
@@ -1614,8 +1807,7 @@ class MessageOrchestrator:
         await update.message.reply_text(
             "<b>Repos</b>\n\n"
             f"Current: <code>{escape_html(current_display)}</code>\n"
-            f"Root: <code>{escape_html(str(root))}</code>\n\n"
-            + "\n".join(lines),
+            f"Root: <code>{escape_html(str(root))}</code>\n\n" + "\n".join(lines),
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
@@ -1780,3 +1972,15 @@ class MessageOrchestrator:
                 args=[project_name],
                 success=True,
             )
+
+    async def _agentic_memory_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle memory:* callbacks in agentic mode."""
+        from .handlers import callback  # noqa: PLC0415
+
+        query = update.callback_query
+        await query.answer()
+        data = query.data or "memory:panel"
+        payload = data.split(":", 1)[1] if ":" in data else "panel"
+        await callback.handle_memory_callback(query, payload, context)

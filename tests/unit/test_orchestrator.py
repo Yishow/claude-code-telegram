@@ -10,6 +10,8 @@ import pytest
 
 from src.bot.orchestrator import MessageOrchestrator, _redact_secrets
 from src.config import create_test_config
+from src.memory import MemoryPreHookResult
+from src.storage.models import MemoryRuntimeSettingsModel
 
 
 @pytest.fixture
@@ -82,8 +84,31 @@ def deps():
     }
 
 
-def test_agentic_registers_6_commands(agentic_settings, deps):
-    """Agentic mode registers start/new/status/verbose/repo/model commands."""
+def _memory_runtime_model() -> MemoryRuntimeSettingsModel:
+    return MemoryRuntimeSettingsModel(
+        scope_key="123:-100:0",
+        user_id=123,
+        chat_id=-100,
+        message_thread_id=0,
+        memory_system_plus_enabled=True,
+        memory_hooks_enabled=True,
+        memory_pre_hook_enabled=True,
+        memory_post_hook_enabled=True,
+        memory_ai_enhancement_enabled=True,
+        memory_ai_extractor_enabled=True,
+        memory_ai_reranker_enabled=True,
+        memory_ai_conflict_detector_enabled=True,
+        memory_ai_periodic_review_enabled=True,
+        memory_profile="balanced",
+        memory_ai_model="gpt-5-mini",
+        memory_ai_timeout_seconds=20,
+        memory_recall_limit=20,
+        memory_injection_token_budget=800,
+    )
+
+
+def test_agentic_registers_7_commands(agentic_settings, deps):
+    """Agentic mode registers start/new/status/verbose/memory/repo/model commands."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -100,17 +125,18 @@ def test_agentic_registers_6_commands(agentic_settings, deps):
     ]
     commands = [h[0][0].commands for h in cmd_handlers]
 
-    assert len(cmd_handlers) == 6
+    assert len(cmd_handlers) == 7
     assert frozenset({"start"}) in commands
     assert frozenset({"new"}) in commands
     assert frozenset({"status"}) in commands
     assert frozenset({"verbose"}) in commands
+    assert frozenset({"memory"}) in commands
     assert frozenset({"repo"}) in commands
     assert frozenset({"model"}) in commands
 
 
-def test_classic_registers_16_commands(classic_settings, deps):
-    """Classic mode registers all 16 commands."""
+def test_classic_registers_17_commands(classic_settings, deps):
+    """Classic mode registers all 17 commands."""
     orchestrator = MessageOrchestrator(classic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -125,7 +151,7 @@ def test_classic_registers_16_commands(classic_settings, deps):
         if isinstance(call[0][0], CommandHandler)
     ]
 
-    assert len(cmd_handlers) == 16
+    assert len(cmd_handlers) == 17
 
 
 def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
@@ -151,26 +177,26 @@ def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
 
     # 3 message handlers (text, document, photo)
     assert len(msg_handlers) == 3
-    # 3 callback handlers (cd:, ask_user:, perm:)
-    assert len(cb_handlers) == 3
+    # 4 callback handlers (cd:, memory:, ask_user:, perm:)
+    assert len(cb_handlers) == 4
 
 
 async def test_agentic_bot_commands(agentic_settings, deps):
-    """Agentic mode returns 6 bot commands."""
+    """Agentic mode returns 7 bot commands."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 6
+    assert len(commands) == 7
     cmd_names = [c.command for c in commands]
-    assert cmd_names == ["start", "new", "status", "verbose", "repo", "model"]
+    assert cmd_names == ["start", "new", "status", "verbose", "memory", "repo", "model"]
 
 
 async def test_classic_bot_commands(classic_settings, deps):
-    """Classic mode returns 16 bot commands."""
+    """Classic mode returns 17 bot commands."""
     orchestrator = MessageOrchestrator(classic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 16
+    assert len(commands) == 17
     cmd_names = [c.command for c in commands]
     assert "start" in cmd_names
     assert "help" in cmd_names
@@ -295,6 +321,116 @@ async def test_agentic_text_calls_claude(agentic_settings, deps):
         assert call.kwargs.get("reply_markup") is None
 
 
+async def test_agentic_text_memory_pre_hook_fallback(agentic_settings, deps):
+    """Pre-hook failure should not block Claude execution."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    mock_response = MagicMock()
+    mock_response.session_id = "session-pre-fallback"
+    mock_response.content = "ok"
+    mock_response.tools_used = []
+
+    claude_integration = AsyncMock()
+    claude_integration.run_command = AsyncMock(return_value=mock_response)
+
+    memory_service = AsyncMock()
+    memory_service.apply_pre_hook = AsyncMock(side_effect=RuntimeError("boom"))
+    memory_service.apply_post_hook = AsyncMock()
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.effective_chat.id = -100
+    update.message.text = "original prompt"
+    update.message.message_id = 1
+    update.message.chat.send_action = AsyncMock()
+    update.message.reply_text = AsyncMock()
+
+    progress_msg = AsyncMock()
+    progress_msg.delete = AsyncMock()
+    update.message.reply_text.return_value = progress_msg
+
+    context = MagicMock()
+    context.user_data = {}
+    context.bot_data = {
+        "settings": agentic_settings,
+        "claude_integration": claude_integration,
+        "memory_service": memory_service,
+        "storage": None,
+        "rate_limiter": None,
+        "audit_logger": None,
+    }
+
+    await orchestrator.agentic_text(update, context)
+
+    assert (
+        claude_integration.run_command.call_args.kwargs["prompt"] == "original prompt"
+    )
+    memory_service.apply_post_hook.assert_called_once()
+
+
+async def test_agentic_text_memory_hook_pipeline(agentic_settings, deps):
+    """Memory pre/post hooks should wrap agentic text execution."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    mock_response = MagicMock()
+    mock_response.session_id = "session-memory"
+    mock_response.content = "assistant output"
+    mock_response.tools_used = []
+
+    claude_integration = AsyncMock()
+    claude_integration.run_command = AsyncMock(return_value=mock_response)
+
+    memory_service = AsyncMock()
+    memory_service.apply_pre_hook = AsyncMock(
+        return_value=MemoryPreHookResult(
+            prompt="[Memory Context]\n1. [fact] x\n\n---\noriginal prompt",
+            controls={
+                "provider": "copilot",
+                "copilot_model": "gpt-5-mini",
+                "reasoning_effort": "high",
+                "skill_directories": [],
+                "disabled_skills": [],
+                "mcp_env_value_mode": "raw",
+                "external_cli_server": None,
+            },
+            runtime_settings=_memory_runtime_model(),
+        )
+    )
+    memory_service.apply_post_hook = AsyncMock()
+
+    update = MagicMock()
+    update.effective_user.id = 123
+    update.effective_chat.id = -100
+    update.message.text = "original prompt"
+    update.message.message_id = 1
+    update.message.chat.send_action = AsyncMock()
+    update.message.reply_text = AsyncMock()
+
+    progress_msg = AsyncMock()
+    progress_msg.delete = AsyncMock()
+    update.message.reply_text.return_value = progress_msg
+
+    context = MagicMock()
+    context.user_data = {}
+    context.bot_data = {
+        "settings": agentic_settings,
+        "claude_integration": claude_integration,
+        "memory_service": memory_service,
+        "storage": None,
+        "rate_limiter": None,
+        "audit_logger": None,
+    }
+
+    await orchestrator.agentic_text(update, context)
+
+    assert claude_integration.run_command.call_args.kwargs["prompt"].startswith(
+        "[Memory Context]"
+    )
+    post_kwargs = memory_service.apply_post_hook.call_args.kwargs
+    assert post_kwargs["prompt"] == "original prompt"
+    assert post_kwargs["success"] is True
+
+
 async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
     """Agentic callback handlers include one scoped to cd: pattern."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
@@ -311,12 +447,18 @@ async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
         if isinstance(call[0][0], CallbackQueryHandler)
     ]
 
-    assert len(cb_handlers) == 3
+    assert len(cb_handlers) == 4
     cd_handlers = [h for h in cb_handlers if h.pattern and h.pattern.pattern == "^cd:"]
     assert len(cd_handlers) == 1
+    memory_handlers = [
+        h for h in cb_handlers if h.pattern and h.pattern.pattern == "^memory:"
+    ]
+    assert len(memory_handlers) == 1
     # The cd: handler pattern should match cd: prefixed data
     assert cd_handlers[0].pattern is not None
     assert cd_handlers[0].pattern.match("cd:my_project")
+    assert memory_handlers[0].pattern is not None
+    assert memory_handlers[0].pattern.match("memory:panel")
 
 
 async def test_agentic_repo_lists_from_current_directory(

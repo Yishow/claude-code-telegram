@@ -4,6 +4,8 @@ import asyncio
 import base64
 import os
 import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Optional
 
 import structlog
@@ -310,6 +312,13 @@ async def handle_text_message(
     """Handle regular text messages as Claude prompts."""
     user_id = update.effective_user.id
     message_text = update.message.text
+    raw_prompt = message_text
+    chat_id = update.effective_chat.id if update.effective_chat else 0
+    message_thread_id = (
+        update.message.message_thread_id
+        if isinstance(getattr(update.message, "message_thread_id", None), int)
+        else None
+    )
     settings: Settings = context.bot_data["settings"]
 
     # Get services
@@ -383,6 +392,8 @@ async def handle_text_message(
         current_dir = context.user_data.get(
             "current_directory", settings.approved_directory
         )
+        if not isinstance(current_dir, Path):
+            current_dir = Path(current_dir)
 
         # Get existing session ID
         session_id = context.user_data.get("claude_session_id")
@@ -391,6 +402,29 @@ async def handle_text_message(
         # Flag is only cleared after a successful run so retries keep the intent.
         force_new = bool(context.user_data.get("force_new_session"))
         controls = consume_request_controls(settings, context.user_data)
+        effective_prompt = message_text
+        effective_controls = controls
+        memory_runtime_settings = None
+        memory_service = context.bot_data.get("memory_service")
+        if memory_service:
+            try:
+                pre_hook_result = await memory_service.apply_pre_hook(
+                    prompt=message_text,
+                    controls=controls,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    project_path=current_dir,
+                )
+                effective_prompt = pre_hook_result.prompt
+                effective_controls = pre_hook_result.controls
+                memory_runtime_settings = pre_hook_result.runtime_settings
+            except Exception as memory_error:
+                logger.warning(
+                    "Memory pre-hook failed",
+                    user_id=user_id,
+                    error=str(memory_error),
+                )
 
         # Enhanced stream updates handler with interactive bridge support
         async def stream_handler(update_obj):
@@ -403,7 +437,9 @@ async def handle_text_message(
                     question = update_obj.content or "Copilot asks:"
 
                     if interaction_id:
-                        context.user_data["pending_ask_user_interaction_id"] = interaction_id
+                        context.user_data["pending_ask_user_interaction_id"] = (
+                            interaction_id
+                        )
 
                     reply_markup = None
                     if interaction_id and choices:
@@ -435,17 +471,21 @@ async def handle_text_message(
                     interaction_id = str(meta.get("interaction_id") or "")
                     kind = str(meta.get("kind") or update_obj.content or "unknown")
                     if interaction_id:
-                        context.user_data["pending_permission_interaction_id"] = interaction_id
-                    keyboard = [[
-                        InlineKeyboardButton(
-                            "✅ Approve",
-                            callback_data=f"perm:{interaction_id}:approve",
-                        ),
-                        InlineKeyboardButton(
-                            "❌ Deny",
-                            callback_data=f"perm:{interaction_id}:deny",
-                        ),
-                    ]]
+                        context.user_data["pending_permission_interaction_id"] = (
+                            interaction_id
+                        )
+                    keyboard = [
+                        [
+                            InlineKeyboardButton(
+                                "✅ Approve",
+                                callback_data=f"perm:{interaction_id}:approve",
+                            ),
+                            InlineKeyboardButton(
+                                "❌ Deny",
+                                callback_data=f"perm:{interaction_id}:deny",
+                            ),
+                        ]
+                    ]
                     await progress_msg.edit_text(
                         "🔐 <b>Permission request</b>\n\n"
                         f"Action: <code>{escape_html(kind)}</code>\n"
@@ -479,28 +519,31 @@ async def handle_text_message(
                 logger.warning("Failed to update progress message", error=str(e))
 
         # Run Claude command
+        claude_response = None
+        success = True
+        request_started_at = datetime.now(UTC)
+        response_content = ""
+        response_session_id = session_id
         try:
             claude_response = await claude_integration.run_command(
-                prompt=message_text,
+                prompt=effective_prompt,
                 working_directory=current_dir,
                 user_id=user_id,
-                chat_id=update.effective_chat.id if update.effective_chat else 0,
-                message_thread_id=(
-                    update.message.message_thread_id
-                    if isinstance(getattr(update.message, "message_thread_id", None), int)
-                    else None
-                ),
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
                 session_id=session_id,
                 on_stream=stream_handler,
                 force_new=force_new,
-                provider=controls["provider"],
-                copilot_model=controls["copilot_model"],
-                reasoning_effort=controls["reasoning_effort"],
-                skill_directories=controls["skill_directories"],
-                disabled_skills=controls["disabled_skills"],
-                mcp_env_value_mode=controls["mcp_env_value_mode"],
-                external_cli_server=controls["external_cli_server"],
+                provider=effective_controls["provider"],
+                copilot_model=effective_controls["copilot_model"],
+                reasoning_effort=effective_controls["reasoning_effort"],
+                skill_directories=effective_controls["skill_directories"],
+                disabled_skills=effective_controls["disabled_skills"],
+                mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
+                external_cli_server=effective_controls["external_cli_server"],
             )
+            response_content = claude_response.content
+            response_session_id = claude_response.session_id
 
             # New session created successfully — clear the one-shot flag
             if force_new:
@@ -535,13 +578,54 @@ async def handle_text_message(
                 claude_response.content
             )
 
+        except ClaudeToolValidationError as e:
+            success = False
+            # Tool validation error with detailed instructions
+            logger.error(
+                "Tool validation error",
+                error=str(e),
+                user_id=user_id,
+                blocked_tools=e.blocked_tools,
+            )
+            # Error message already formatted, create FormattedMessage
+            from ..utils.formatting import FormattedMessage
+
+            formatted_messages = [FormattedMessage(str(e), parse_mode="HTML")]
         except Exception as e:
+            success = False
             logger.error("Claude integration failed", error=str(e), user_id=user_id)
             from ..utils.formatting import FormattedMessage
 
             formatted_messages = [
                 FormattedMessage(_format_error_message(e), parse_mode="HTML")
             ]
+
+        if memory_service:
+            try:
+                elapsed_ms = int(
+                    (datetime.now(UTC) - request_started_at).total_seconds() * 1000
+                )
+                await memory_service.apply_post_hook(
+                    prompt=raw_prompt,
+                    response=response_content,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    project_path=current_dir,
+                    source_session_id=response_session_id,
+                    source_message_id=(
+                        update.message.message_id if update.message else None
+                    ),
+                    runtime_settings=memory_runtime_settings,
+                    success=success,
+                    elapsed_ms=elapsed_ms,
+                )
+            except Exception as memory_error:
+                logger.warning(
+                    "Memory post-hook failed",
+                    user_id=user_id,
+                    error=str(memory_error),
+                )
 
         # Delete progress message
         await progress_msg.delete()
@@ -826,30 +910,64 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         current_dir = context.user_data.get(
             "current_directory", settings.approved_directory
         )
+        if not isinstance(current_dir, Path):
+            current_dir = Path(current_dir)
         session_id = context.user_data.get("claude_session_id")
         controls = consume_request_controls(settings, context.user_data)
+        chat_id = update.effective_chat.id if update.effective_chat else 0
+        message_thread_id = (
+            update.message.message_thread_id
+            if isinstance(getattr(update.message, "message_thread_id", None), int)
+            else None
+        )
+        raw_prompt = prompt
+        effective_prompt = prompt
+        effective_controls = controls
+        memory_runtime_settings = None
+        memory_service = context.bot_data.get("memory_service")
+        if memory_service:
+            try:
+                pre_hook_result = await memory_service.apply_pre_hook(
+                    prompt=prompt,
+                    controls=controls,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
+                    project_path=current_dir,
+                )
+                effective_prompt = pre_hook_result.prompt
+                effective_controls = pre_hook_result.controls
+                memory_runtime_settings = pre_hook_result.runtime_settings
+            except Exception as memory_error:
+                logger.warning(
+                    "Memory pre-hook failed for document",
+                    user_id=user_id,
+                    error=str(memory_error),
+                )
 
         # Process with Claude
+        success = True
+        request_started_at = datetime.now(UTC)
+        response_content = ""
+        response_session_id = session_id
         try:
             claude_response = await claude_integration.run_command(
-                prompt=prompt,
+                prompt=effective_prompt,
                 working_directory=current_dir,
                 user_id=user_id,
-                chat_id=update.effective_chat.id if update.effective_chat else 0,
-                message_thread_id=(
-                    update.message.message_thread_id
-                    if isinstance(getattr(update.message, "message_thread_id", None), int)
-                    else None
-                ),
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
                 session_id=session_id,
-                provider=controls["provider"],
-                copilot_model=controls["copilot_model"],
-                reasoning_effort=controls["reasoning_effort"],
-                skill_directories=controls["skill_directories"],
-                disabled_skills=controls["disabled_skills"],
-                mcp_env_value_mode=controls["mcp_env_value_mode"],
-                external_cli_server=controls["external_cli_server"],
+                provider=effective_controls["provider"],
+                copilot_model=effective_controls["copilot_model"],
+                reasoning_effort=effective_controls["reasoning_effort"],
+                skill_directories=effective_controls["skill_directories"],
+                disabled_skills=effective_controls["disabled_skills"],
+                mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
+                external_cli_server=effective_controls["external_cli_server"],
             )
+            response_content = claude_response.content
+            response_session_id = claude_response.session_id
 
             # Update session ID
             context.user_data["claude_session_id"] = claude_response.session_id
@@ -883,10 +1001,38 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     await asyncio.sleep(0.5)
 
         except Exception as e:
+            success = False
             await claude_progress_msg.edit_text(
                 _format_error_message(e), parse_mode="HTML"
             )
             logger.error("Claude file processing failed", error=str(e), user_id=user_id)
+        finally:
+            if memory_service:
+                try:
+                    elapsed_ms = int(
+                        (datetime.now(UTC) - request_started_at).total_seconds() * 1000
+                    )
+                    await memory_service.apply_post_hook(
+                        prompt=raw_prompt,
+                        response=response_content,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        project_path=current_dir,
+                        source_session_id=response_session_id,
+                        source_message_id=(
+                            update.message.message_id if update.message else None
+                        ),
+                        runtime_settings=memory_runtime_settings,
+                        success=success,
+                        elapsed_ms=elapsed_ms,
+                    )
+                except Exception as memory_error:
+                    logger.warning(
+                        "Memory post-hook failed for document",
+                        user_id=user_id,
+                        error=str(memory_error),
+                    )
 
         # Log successful file processing
         if audit_logger:
@@ -894,7 +1040,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 user_id=user_id,
                 file_path=document.file_name,
                 action="upload_processed",
-                success=True,
+                success=success,
                 file_size=document.file_size,
             )
 
@@ -967,11 +1113,43 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             current_dir = context.user_data.get(
                 "current_directory", settings.approved_directory
             )
+            if not isinstance(current_dir, Path):
+                current_dir = Path(current_dir)
             session_id = context.user_data.get("claude_session_id")
             controls = consume_request_controls(settings, context.user_data)
+            chat_id = update.effective_chat.id if update.effective_chat else 0
+            message_thread_id = (
+                update.message.message_thread_id
+                if isinstance(getattr(update.message, "message_thread_id", None), int)
+                else None
+            )
+            raw_prompt = processed_image.prompt
+            effective_prompt = raw_prompt
+            effective_controls = controls
+            memory_runtime_settings = None
+            memory_service = context.bot_data.get("memory_service")
+            if memory_service:
+                try:
+                    pre_hook_result = await memory_service.apply_pre_hook(
+                        prompt=raw_prompt,
+                        controls=controls,
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        project_path=current_dir,
+                    )
+                    effective_prompt = pre_hook_result.prompt
+                    effective_controls = pre_hook_result.controls
+                    memory_runtime_settings = pre_hook_result.runtime_settings
+                except Exception as memory_error:
+                    logger.warning(
+                        "Memory pre-hook failed for photo",
+                        user_id=user_id,
+                        error=str(memory_error),
+                    )
             image_path: Optional[str] = None
             tmp_path: Optional[str] = None
-            if controls["provider"] == "copilot":
+            if effective_controls["provider"] == "copilot":
                 fmt = (
                     processed_image.metadata.get("format", "png")
                     if processed_image.metadata
@@ -988,27 +1166,29 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     os.close(fd)
 
             # Process with Claude
+            success = True
+            request_started_at = datetime.now(UTC)
+            response_content = ""
+            response_session_id = session_id
             try:
                 claude_response = await claude_integration.run_command(
-                    prompt=processed_image.prompt,
+                    prompt=effective_prompt,
                     working_directory=current_dir,
                     user_id=user_id,
-                    chat_id=update.effective_chat.id if update.effective_chat else 0,
-                    message_thread_id=(
-                        update.message.message_thread_id
-                        if isinstance(getattr(update.message, "message_thread_id", None), int)
-                        else None
-                    ),
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
                     session_id=session_id,
-                    provider=controls["provider"],
-                    copilot_model=controls["copilot_model"],
-                    reasoning_effort=controls["reasoning_effort"],
-                    skill_directories=controls["skill_directories"],
-                    disabled_skills=controls["disabled_skills"],
-                    mcp_env_value_mode=controls["mcp_env_value_mode"],
-                    external_cli_server=controls["external_cli_server"],
+                    provider=effective_controls["provider"],
+                    copilot_model=effective_controls["copilot_model"],
+                    reasoning_effort=effective_controls["reasoning_effort"],
+                    skill_directories=effective_controls["skill_directories"],
+                    disabled_skills=effective_controls["disabled_skills"],
+                    mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
+                    external_cli_server=effective_controls["external_cli_server"],
                     image_path=image_path,
                 )
+                response_content = claude_response.content
+                response_session_id = claude_response.session_id
 
                 # Update session ID
                 context.user_data["claude_session_id"] = claude_response.session_id
@@ -1039,6 +1219,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                         await asyncio.sleep(0.5)
 
             except Exception as e:
+                success = False
                 await claude_progress_msg.edit_text(
                     _format_error_message(e), parse_mode="HTML"
                 )
@@ -1046,6 +1227,33 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     "Claude image processing failed", error=str(e), user_id=user_id
                 )
             finally:
+                if memory_service:
+                    try:
+                        elapsed_ms = int(
+                            (datetime.now(UTC) - request_started_at).total_seconds()
+                            * 1000
+                        )
+                        await memory_service.apply_post_hook(
+                            prompt=raw_prompt,
+                            response=response_content,
+                            user_id=user_id,
+                            chat_id=chat_id,
+                            message_thread_id=message_thread_id,
+                            project_path=current_dir,
+                            source_session_id=response_session_id,
+                            source_message_id=(
+                                update.message.message_id if update.message else None
+                            ),
+                            runtime_settings=memory_runtime_settings,
+                            success=success,
+                            elapsed_ms=elapsed_ms,
+                        )
+                    except Exception as memory_error:
+                        logger.warning(
+                            "Memory post-hook failed for photo",
+                            user_id=user_id,
+                            error=str(memory_error),
+                        )
                 if tmp_path:
                     try:
                         os.unlink(tmp_path)
