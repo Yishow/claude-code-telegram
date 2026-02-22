@@ -28,6 +28,7 @@ class ClaudeIntegration:
         sdk_manager: Optional[ClaudeSDKManager] = None,
         copilot_manager: Optional[CopilotProcessManager] = None,
         session_manager: Optional[SessionManager] = None,
+        tool_monitor: Optional[Any] = None,
         default_provider: Optional[ProviderType] = None,
     ):
         """Initialize Claude integration facade."""
@@ -36,24 +37,34 @@ class ClaudeIntegration:
             self.default_provider: ProviderType = default_provider
         else:
             configured_provider = getattr(config, "default_provider", "claude")
-            self.default_provider = (
-                "copilot" if configured_provider == "copilot" else "claude"
-            )
+        self.default_provider = (
+            "copilot" if configured_provider == "copilot" else "claude"
+        )
         self.sdk_manager = sdk_manager or ClaudeSDKManager(config)
-        self.copilot_manager = copilot_manager or CopilotProcessManager(config)
         self.session_manager = session_manager
+        self.tool_monitor = tool_monitor
+        self.copilot_manager = copilot_manager or CopilotProcessManager(
+            config, tool_monitor=tool_monitor
+        )
 
     async def run_command(
         self,
         prompt: str,
         working_directory: Path,
         user_id: int,
+        chat_id: int = 0,
+        message_thread_id: Optional[int] = None,
         session_id: Optional[str] = None,
         on_stream: Optional[Callable[[StreamUpdate], None]] = None,
         force_new: bool = False,
         provider: Optional[ProviderType] = None,
         copilot_model: Optional[str] = None,
         image_path: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        skill_directories: Optional[List[str]] = None,
+        disabled_skills: Optional[List[str]] = None,
+        mcp_env_value_mode: Optional[str] = None,
+        external_cli_server: Optional[str] = None,
     ) -> ClaudeResponse:
         """Run Claude Code or Copilot command with full integration."""
         # Use specified provider or default
@@ -104,12 +115,19 @@ class ClaudeIntegration:
                     prompt=prompt,
                     working_directory=working_directory,
                     user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=message_thread_id,
                     session_id=claude_session_id,
                     continue_session=should_continue,
                     stream_callback=on_stream,
                     provider=actual_provider,
                     copilot_model=copilot_model,
                     image_path=image_path,
+                    reasoning_effort=reasoning_effort,
+                    skill_directories=skill_directories,
+                    disabled_skills=disabled_skills,
+                    mcp_env_value_mode=mcp_env_value_mode,
+                    external_cli_server=external_cli_server,
                 )
             except Exception as resume_error:
                 # If resume failed (e.g., session expired/missing on Claude's side),
@@ -132,12 +150,19 @@ class ClaudeIntegration:
                         prompt=prompt,
                         working_directory=working_directory,
                         user_id=user_id,
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
                         session_id=None,
                         continue_session=False,
                         stream_callback=on_stream,
                         provider=actual_provider,
                         copilot_model=copilot_model,
                         image_path=image_path,
+                        reasoning_effort=reasoning_effort,
+                        skill_directories=skill_directories,
+                        disabled_skills=disabled_skills,
+                        mcp_env_value_mode=mcp_env_value_mode,
+                        external_cli_server=external_cli_server,
                     )
                 else:
                     raise
@@ -179,12 +204,19 @@ class ClaudeIntegration:
         prompt: str,
         working_directory: Path,
         user_id: int = 0,
+        chat_id: int = 0,
+        message_thread_id: Optional[int] = None,
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
         provider: Optional[ProviderType] = None,
         copilot_model: Optional[str] = None,
         image_path: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        skill_directories: Optional[List[str]] = None,
+        disabled_skills: Optional[List[str]] = None,
+        mcp_env_value_mode: Optional[str] = None,
+        external_cli_server: Optional[str] = None,
     ) -> ClaudeResponse:
         """Execute command via SDK or Copilot."""
         actual_provider = provider or self.default_provider
@@ -194,11 +226,18 @@ class ClaudeIntegration:
                 prompt=prompt,
                 working_directory=working_directory,
                 user_id=user_id,
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
                 session_id=session_id,
                 continue_session=continue_session,
                 stream_callback=stream_callback,
                 model=copilot_model,
                 image_path=image_path,
+                reasoning_effort=reasoning_effort,
+                skill_directories=skill_directories,
+                disabled_skills=disabled_skills,
+                mcp_env_value_mode=mcp_env_value_mode,
+                external_cli_server=external_cli_server,
             )
 
         return await self.sdk_manager.execute_command(
@@ -318,5 +357,140 @@ class ClaudeIntegration:
         logger.info("Shutting down Claude integration")
 
         await self.cleanup_expired_sessions()
+        await self.copilot_manager.shutdown()
 
         logger.info("Claude integration shutdown complete")
+
+    async def get_copilot_status(self) -> Dict[str, Any]:
+        """Get Copilot runtime/introspection status."""
+        return await self.copilot_manager.get_status()
+
+    async def list_copilot_sessions(self) -> List[Dict[str, Any]]:
+        """List known Copilot sessions."""
+        return await self.copilot_manager.list_sessions()
+
+    async def delete_copilot_session(self, session_id: str) -> Dict[str, Any]:
+        """Delete a Copilot session."""
+        return await self.copilot_manager.delete_session(session_id)
+
+    def get_copilot_runtime_controls(self) -> Dict[str, Any]:
+        """Get active Copilot runtime controls."""
+        return self.copilot_manager.get_runtime_controls()
+
+    def update_copilot_runtime_controls(
+        self,
+        *,
+        reasoning_effort: Optional[str] = None,
+        skill_directories: Optional[List[str]] = None,
+        disabled_skills: Optional[List[str]] = None,
+        mcp_env_value_mode: Optional[str] = None,
+        external_cli_server: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update Copilot runtime controls."""
+        return self.copilot_manager.update_runtime_controls(
+            reasoning_effort=reasoning_effort,
+            skill_directories=skill_directories,
+            disabled_skills=disabled_skills,
+            mcp_env_value_mode=mcp_env_value_mode,
+            external_cli_server=external_cli_server,
+        )
+
+    def _get_admin_instructions(self, blocked_tools: List[str]) -> str:
+        """Generate admin instructions for enabling blocked tools."""
+        instructions = []
+
+        # Check if settings file exists
+        settings_file = Path(".env")
+
+        if blocked_tools:
+            # Get current allowed tools and create merged list without duplicates
+            current_tools = [
+                "Read",
+                "Write",
+                "Edit",
+                "Bash",
+                "Glob",
+                "Grep",
+                "LS",
+                "Task",
+                "TaskOutput",
+                "MultiEdit",
+                "NotebookRead",
+                "NotebookEdit",
+                "WebFetch",
+                "TodoRead",
+                "TodoWrite",
+                "WebSearch",
+            ]
+            merged_tools = list(
+                dict.fromkeys(current_tools + blocked_tools)
+            )  # Remove duplicates while preserving order
+            merged_tools_str = ",".join(merged_tools)
+            merged_tools_py = ", ".join(f'"{tool}"' for tool in merged_tools)
+
+            instructions.append("**For Administrators:**")
+            instructions.append("")
+
+            if settings_file.exists():
+                instructions.append(
+                    "To enable these tools, add them to your `.env` file:"
+                )
+                instructions.append("```")
+                instructions.append(f'CLAUDE_ALLOWED_TOOLS="{merged_tools_str}"')
+                instructions.append("```")
+            else:
+                instructions.append("To enable these tools:")
+                instructions.append("1. Create a `.env` file in your project root")
+                instructions.append("2. Add the following line:")
+                instructions.append("```")
+                instructions.append(f'CLAUDE_ALLOWED_TOOLS="{merged_tools_str}"')
+                instructions.append("```")
+
+            instructions.append("")
+            instructions.append("Or modify the default in `src/config/settings.py`:")
+            instructions.append("```python")
+            instructions.append("claude_allowed_tools: Optional[List[str]] = Field(")
+            instructions.append(f"    default=[{merged_tools_py}],")
+            instructions.append('    description="List of allowed Claude tools",')
+            instructions.append(")")
+            instructions.append("```")
+
+        return "\n".join(instructions)
+
+    def _create_tool_error_message(
+        self,
+        blocked_tools: List[str],
+        allowed_tools: List[str],
+        admin_instructions: str,
+    ) -> str:
+        """Create a comprehensive error message for tool validation failures."""
+        tool_list = ", ".join(f"`{tool}`" for tool in blocked_tools)
+        allowed_list = (
+            ", ".join(f"`{tool}`" for tool in allowed_tools)
+            if allowed_tools
+            else "None"
+        )
+
+        message = [
+            "🚫 **Tool Access Blocked**",
+            "",
+            "Claude tried to use tools that are not currently allowed:",
+            f"{tool_list}",
+            "",
+            "**Why this happened:**",
+            "• Claude needs these tools to complete your request",
+            "• These tools are not in the allowed tools list",
+            "• This is a security feature to control what Claude can do",
+            "",
+            "**What you can do:**",
+            "• Contact the administrator to request access to these tools",
+            "• Try rephrasing your request to use different approaches",
+            "• Use simpler requests that don't require these tools",
+            "",
+            "**Currently allowed tools:**",
+            f"{allowed_list}",
+            "",
+            admin_instructions,
+        ]
+
+        return "\n".join(message)

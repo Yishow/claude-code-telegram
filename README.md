@@ -123,7 +123,7 @@ The bot supports two interaction modes:
 
 The default conversational mode. Just talk to Claude naturally -- no special commands required.
 
-**Commands:** `/start`, `/new`, `/status`, `/verbose`, `/repo`
+**Commands:** `/start`, `/new`, `/status`, `/verbose`, `/repo`, `/provider`, `/model`, `/copilot`
 If `ENABLE_PROJECT_THREADS=true`: `/sync_threads`
 
 ```
@@ -182,7 +182,7 @@ Use `/repo` to list cloned repos in your workspace, or `/repo <name>` to switch 
 
 Set `AGENTIC_MODE=false` to enable the full 13-command terminal-like interface with directory navigation, inline keyboards, quick actions, git integration, and session export.
 
-**Commands:** `/start`, `/help`, `/new`, `/continue`, `/end`, `/status`, `/cd`, `/ls`, `/pwd`, `/projects`, `/export`, `/actions`, `/git`  
+**Commands:** `/start`, `/help`, `/new`, `/continue`, `/end`, `/status`, `/provider`, `/model`, `/copilot`, `/cd`, `/ls`, `/pwd`, `/projects`, `/export`, `/actions`, `/git`  
 If `ENABLE_PROJECT_THREADS=true`: `/sync_threads`
 
 ```
@@ -212,7 +212,7 @@ Enable with `ENABLE_API_SERVER=true` and `ENABLE_SCHEDULER=true`. See [docs/setu
 
 - Conversational agentic mode (default) with natural language interaction
 - Classic terminal-like mode with 13 commands and inline keyboards
-- Full Claude Code integration with SDK (primary) and CLI (fallback)
+- Full Claude/Copilot SDK integration with configurable Copilot fallback (`sdk_only` / `sdk_then_cli`)
 - Automatic session persistence per user/project directory
 - Multi-layer authentication (whitelist + optional token-based)
 - Rate limiting with token bucket algorithm
@@ -222,6 +222,7 @@ Enable with `ENABLE_API_SERVER=true` and `ENABLE_SCHEDULER=true`. See [docs/setu
 - Git integration with safe repository operations
 - Quick actions system with context-aware buttons
 - Session export in Markdown, HTML, and JSON formats
+- Copilot control-plane commands (`/copilot status|sessions|delete|reasoning|skills|mcp|fallback|external`)
 - SQLite persistence with migrations
 - Usage and cost tracking
 - Audit logging and security event tracking
@@ -252,6 +253,11 @@ ALLOWED_USERS=123456789          # Comma-separated Telegram user IDs
 ### Common Options
 
 ```bash
+# Provider
+DEFAULT_PROVIDER=claude            # claude|copilot
+COPILOT_MODEL=gpt-5.3-codex
+COPILOT_FALLBACK_MODE=sdk_then_cli # sdk_only|sdk_then_cli
+
 # Claude
 ANTHROPIC_API_KEY=sk-ant-...     # API key (optional if using CLI auth)
 CLAUDE_MAX_COST_PER_USER=10.0    # Spending limit per user (USD)
@@ -332,6 +338,7 @@ Message [@userinfobot](https://t.me/userinfobot) on Telegram -- it will reply wi
 - SDK mode (default): Check `claude auth status` or verify `ANTHROPIC_API_KEY`
 - CLI mode: Verify `claude --version` and `claude auth status`
 - Check `CLAUDE_ALLOWED_TOOLS` includes necessary tools (see [docs/tools.md](docs/tools.md) for the full reference)
+- For Copilot degraded states, follow [docs/copilot-runbook.md](docs/copilot-runbook.md)
 
 **High usage costs:**
 - Adjust `CLAUDE_MAX_COST_PER_USER` to set spending limits

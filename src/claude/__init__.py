@@ -2,6 +2,7 @@
 
 from .exceptions import (
     ClaudeError,
+    CopilotAuthenticationError,
     ClaudeParsingError,
     ClaudeProcessError,
     ClaudeSessionError,
@@ -19,6 +20,7 @@ from .session import (
 __all__ = [
     # Exceptions
     "ClaudeError",
+    "CopilotAuthenticationError",
     "ClaudeParsingError",
     "ClaudeProcessError",
     "ClaudeSessionError",

@@ -13,6 +13,10 @@ class ClaudeProcessError(ClaudeError):
     """Process execution failed."""
 
 
+class CopilotAuthenticationError(ClaudeProcessError):
+    """Copilot authentication failed."""
+
+
 class ClaudeParsingError(ClaudeError):
     """Failed to parse output."""
 

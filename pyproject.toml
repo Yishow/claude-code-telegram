@@ -45,6 +45,7 @@ version = "1.3.0"
 description = "Telegram bot for remote Claude Code access with comprehensive configuration management"
 readme = "README.md"
 license = "MIT"
+packages = [{include = "src"}]
 authors = [
     {name = "Richard Atkinson", email = "richardatk01@gmail.com"},
 ]

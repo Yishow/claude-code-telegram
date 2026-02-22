@@ -1,7 +1,7 @@
 """Command handlers for bot operations."""
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 import structlog
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -12,6 +12,19 @@ from ...config.settings import Settings
 from ...projects import PrivateTopicsUnavailableError, load_project_registry
 from ...security.audit import AuditLogger
 from ...security.validators import SecurityValidator
+from ..copilot_runtime import (
+    ONCE_MODEL_KEY,
+    ONCE_PROVIDER_KEY,
+    ONCE_REASONING_KEY,
+    SESSION_DISABLED_SKILLS_KEY,
+    SESSION_EXTERNAL_SERVER_KEY,
+    SESSION_MCP_ENV_MODE_KEY,
+    SESSION_MODEL_KEY,
+    SESSION_PROVIDER_KEY,
+    SESSION_REASONING_KEY,
+    SESSION_SKILL_DIRS_KEY,
+    get_runtime_snapshot,
+)
 from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -868,6 +881,7 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "current_directory", settings.approved_directory
     )
     relative_path = current_dir.relative_to(settings.approved_directory)
+    snapshot = get_runtime_snapshot(settings, context.user_data)
 
     # Get rate limiter info if available
     rate_limiter = context.bot_data.get("rate_limiter")
@@ -906,6 +920,10 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         "",
         f"📂 Directory: <code>{relative_path}/</code>",
         f"🤖 Claude Session: {'✅ Active' if claude_session_id else '❌ None'}",
+        f"🧠 Provider: <code>{escape_html(snapshot['provider'])}</code>",
+        f"🧩 Model: <code>{escape_html(snapshot['model'])}</code>",
+        f"🛟 Fallback: <code>{escape_html(snapshot['fallback_mode'])}</code>",
+        f"⚙️ Reasoning: <code>{escape_html(str(snapshot['reasoning_effort']))}</code>",
         usage_info.rstrip(),
         f"🕐 Last Update: {update.message.date.strftime('%H:%M:%S UTC')}",
     ]
@@ -948,6 +966,285 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(
         "\n".join(status_lines), parse_mode="HTML", reply_markup=reply_markup
     )
+
+
+async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /provider command."""
+    settings: Settings = context.bot_data["settings"]
+    args = context.args or []
+    current = context.user_data.get(SESSION_PROVIDER_KEY, settings.default_provider)
+
+    if not args:
+        await update.message.reply_text(
+            f"Current provider: <code>{escape_html(str(current))}</code>\n\n"
+            "Usage: <code>/provider claude|copilot [once]</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    requested = args[0].strip().lower()
+    if requested not in {"claude", "copilot"}:
+        await update.message.reply_text(
+            "Provider must be <code>claude</code> or <code>copilot</code>.",
+            parse_mode="HTML",
+        )
+        return
+
+    once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
+    if once:
+        context.user_data[ONCE_PROVIDER_KEY] = requested
+        msg = f"Provider one-shot override set to <code>{requested}</code>"
+    else:
+        context.user_data[SESSION_PROVIDER_KEY] = requested
+        msg = f"Provider switched to <code>{requested}</code>"
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /model command for Copilot model selection."""
+    from ...claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
+
+    settings: Settings = context.bot_data["settings"]
+    args = context.args or []
+
+    if not args:
+        current = context.user_data.get(SESSION_MODEL_KEY, settings.copilot_model)
+        lines = "\n".join(f"  <code>{m}</code>" for m in COPILOT_MODELS)
+        await update.message.reply_text(
+            f"Current model: <code>{escape_html(str(current))}</code>\n\n"
+            f"<b>Available models:</b>\n{lines}\n\n"
+            "Usage: <code>/model &lt;model_name&gt; [once]</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    requested = args[0].strip()
+    if requested not in COPILOT_MODELS:
+        await update.message.reply_text(
+            f"Unknown model: <code>{escape_html(requested)}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
+    if once:
+        context.user_data[ONCE_MODEL_KEY] = requested
+        msg = f"Model one-shot override set to <code>{escape_html(requested)}</code>"
+    else:
+        context.user_data[SESSION_MODEL_KEY] = requested
+        msg = f"Model switched to <code>{escape_html(requested)}</code>"
+    await update.message.reply_text(msg, parse_mode="HTML")
+
+
+async def copilot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /copilot control-plane command."""
+    settings: Settings = context.bot_data["settings"]
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
+    if not claude_integration:
+        await update.message.reply_text("Claude integration not available.")
+        return
+
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "<b>Copilot controls</b>\n\n"
+            "<code>/copilot status</code>\n"
+            "<code>/copilot sessions</code>\n"
+            "<code>/copilot delete &lt;session_id&gt;</code>\n"
+            "<code>/copilot reasoning low|medium|high [once]</code>\n"
+            "<code>/copilot skills show|add-dir|rm-dir|disable|enable ...</code>\n"
+            "<code>/copilot mcp raw|masked|omit</code>\n"
+            "<code>/copilot fallback sdk_only|sdk_then_cli</code>\n"
+            "<code>/copilot external &lt;url|off&gt;</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    sub = args[0].strip().lower()
+
+    if sub == "status":
+        status = await claude_integration.get_copilot_status()
+        snapshot = get_runtime_snapshot(settings, context.user_data)
+        await update.message.reply_text(
+            "<b>Copilot Status</b>\n\n"
+            f"Provider: <code>{escape_html(snapshot['provider'])}</code>\n"
+            f"Model: <code>{escape_html(snapshot['model'])}</code>\n"
+            f"Fallback: <code>{escape_html(snapshot['fallback_mode'])}</code>\n"
+            f"Reasoning: <code>{escape_html(str(snapshot['reasoning_effort']))}</code>\n"
+            f"MCP env mode: <code>{escape_html(str(snapshot['mcp_env_value_mode']))}</code>\n\n"
+            f"<pre>{escape_html(str(status))}</pre>",
+            parse_mode="HTML",
+        )
+        return
+
+    if sub == "sessions":
+        sessions = await claude_integration.list_copilot_sessions()
+        if not sessions:
+            await update.message.reply_text("No known Copilot sessions.")
+            return
+        lines = [
+            f"• <code>{escape_html(s.get('session_id', ''))}</code> "
+            f"(user={s.get('user_id')}, project=<code>{escape_html(str(s.get('project_path', '')))}</code>)"
+            for s in sessions[:50]
+        ]
+        await update.message.reply_text(
+            "<b>Copilot Sessions</b>\n\n" + "\n".join(lines),
+            parse_mode="HTML",
+        )
+        return
+
+    if sub == "delete":
+        if len(args) < 2:
+            await update.message.reply_text("Usage: /copilot delete <session_id>")
+            return
+        result = await claude_integration.delete_copilot_session(args[1].strip())
+        await update.message.reply_text(
+            f"Delete result: <pre>{escape_html(str(result))}</pre>",
+            parse_mode="HTML",
+        )
+        return
+
+    if sub == "reasoning":
+        if len(args) < 2:
+            current = context.user_data.get(
+                SESSION_REASONING_KEY, settings.copilot_reasoning_default
+            )
+            await update.message.reply_text(
+                f"Current reasoning: <code>{escape_html(str(current))}</code>\n"
+                "Usage: <code>/copilot reasoning low|medium|high [once]</code>",
+                parse_mode="HTML",
+            )
+            return
+        value = args[1].strip().lower()
+        if value not in {"low", "medium", "high"}:
+            await update.message.reply_text("Reasoning must be low, medium, or high.")
+            return
+        once = len(args) > 2 and args[2].strip().lower() in {"once", "--once", "-o"}
+        if once:
+            context.user_data[ONCE_REASONING_KEY] = value
+        else:
+            context.user_data[SESSION_REASONING_KEY] = value
+        claude_integration.update_copilot_runtime_controls(reasoning_effort=value)
+        await update.message.reply_text(
+            (
+                f"Reasoning one-shot override: <code>{value}</code>"
+                if once
+                else f"Reasoning set to <code>{value}</code>"
+            ),
+            parse_mode="HTML",
+        )
+        return
+
+    if sub == "skills":
+        action = args[1].strip().lower() if len(args) > 1 else "show"
+        dirs = list(
+            context.user_data.get(SESSION_SKILL_DIRS_KEY, settings.copilot_skill_directories)
+            or []
+        )
+        disabled = list(
+            context.user_data.get(
+                SESSION_DISABLED_SKILLS_KEY, settings.copilot_disabled_skills
+            )
+            or []
+        )
+        if action == "show":
+            await update.message.reply_text(
+                "<b>Copilot skills</b>\n\n"
+                f"Directories: <code>{escape_html(', '.join(dirs) or '-')}</code>\n"
+                f"Disabled: <code>{escape_html(', '.join(disabled) or '-')}</code>",
+                parse_mode="HTML",
+            )
+            return
+        if len(args) < 3:
+            await update.message.reply_text(
+                "Usage: /copilot skills add-dir|rm-dir|disable|enable <value>"
+            )
+            return
+        value = args[2].strip()
+        if action == "add-dir" and value not in dirs:
+            dirs.append(value)
+        elif action == "rm-dir":
+            dirs = [d for d in dirs if d != value]
+        elif action == "disable" and value not in disabled:
+            disabled.append(value)
+        elif action == "enable":
+            disabled = [s for s in disabled if s != value]
+        else:
+            await update.message.reply_text("Unknown skills action.")
+            return
+        context.user_data[SESSION_SKILL_DIRS_KEY] = dirs
+        context.user_data[SESSION_DISABLED_SKILLS_KEY] = disabled
+        claude_integration.update_copilot_runtime_controls(
+            skill_directories=dirs,
+            disabled_skills=disabled,
+        )
+        await update.message.reply_text("Skills runtime controls updated.")
+        return
+
+    if sub == "mcp":
+        if len(args) < 2:
+            current = context.user_data.get(
+                SESSION_MCP_ENV_MODE_KEY, settings.mcp_env_value_mode
+            )
+            await update.message.reply_text(
+                f"MCP env mode: <code>{escape_html(str(current))}</code>\n"
+                "Usage: <code>/copilot mcp raw|masked|omit</code>",
+                parse_mode="HTML",
+            )
+            return
+        mode = args[1].strip().lower()
+        if mode not in {"raw", "masked", "omit"}:
+            await update.message.reply_text("Mode must be raw, masked, or omit.")
+            return
+        context.user_data[SESSION_MCP_ENV_MODE_KEY] = mode
+        claude_integration.update_copilot_runtime_controls(mcp_env_value_mode=mode)
+        await update.message.reply_text(f"MCP env mode set to <code>{mode}</code>", parse_mode="HTML")
+        return
+
+    if sub == "external":
+        if len(args) < 2:
+            current = context.user_data.get(
+                SESSION_EXTERNAL_SERVER_KEY, settings.copilot_external_cli_server
+            )
+            await update.message.reply_text(
+                "Usage: <code>/copilot external &lt;url|off&gt;</code>\n"
+                f"Current: <code>{escape_html(str(current or 'off'))}</code>",
+                parse_mode="HTML",
+            )
+            return
+        endpoint = args[1].strip()
+        if endpoint.lower() == "off":
+            endpoint = ""
+        context.user_data[SESSION_EXTERNAL_SERVER_KEY] = endpoint or None
+        claude_integration.update_copilot_runtime_controls(
+            external_cli_server=(endpoint or None)
+        )
+        await update.message.reply_text(
+            f"External CLI server: <code>{escape_html(endpoint or 'off')}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    if sub == "fallback":
+        if len(args) < 2:
+            await update.message.reply_text(
+                f"Current fallback: <code>{escape_html(settings.copilot_fallback_mode)}</code>\n"
+                "Usage: <code>/copilot fallback sdk_only|sdk_then_cli</code>",
+                parse_mode="HTML",
+            )
+            return
+        mode = args[1].strip().lower()
+        if mode not in {"sdk_only", "sdk_then_cli"}:
+            await update.message.reply_text("Fallback must be sdk_only or sdk_then_cli.")
+            return
+        settings.copilot_fallback_mode = mode
+        await update.message.reply_text(
+            f"Fallback mode set to <code>{mode}</code>",
+            parse_mode="HTML",
+        )
+        return
+
+    await update.message.reply_text("Unknown subcommand. Use /copilot for help.")
 
 
 async def export_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

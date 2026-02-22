@@ -9,7 +9,7 @@ import asyncio
 import re
 import time
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import structlog
 from telegram import BotCommand, InlineKeyboardButton, InlineKeyboardMarkup, Update
@@ -25,6 +25,20 @@ from telegram.ext import (
 from ..claude.sdk_integration import StreamUpdate
 from ..config.settings import Settings
 from ..projects import PrivateTopicsUnavailableError
+from .copilot_runtime import (
+    ONCE_MODEL_KEY,
+    ONCE_PROVIDER_KEY,
+    ONCE_REASONING_KEY,
+    SESSION_DISABLED_SKILLS_KEY,
+    SESSION_EXTERNAL_SERVER_KEY,
+    SESSION_MCP_ENV_MODE_KEY,
+    SESSION_MODEL_KEY,
+    SESSION_PROVIDER_KEY,
+    SESSION_REASONING_KEY,
+    SESSION_SKILL_DIRS_KEY,
+    consume_request_controls,
+    get_runtime_snapshot,
+)
 from .utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -257,6 +271,43 @@ class MessageOrchestrator:
             return topic_id
         return None
 
+    def _interaction_scope(
+        self,
+        *,
+        update: Optional[Update] = None,
+        context: Optional[ContextTypes.DEFAULT_TYPE] = None,
+    ) -> Tuple[int, int, Optional[int]]:
+        """Return (user_id, chat_id, message_thread_id) for interaction scoping."""
+        user_id = 0
+        chat_id = 0
+        message_thread_id: Optional[int] = None
+
+        if update and update.effective_user:
+            user_id = update.effective_user.id
+        if update and update.effective_chat:
+            chat_id = update.effective_chat.id
+        if update:
+            message_thread_id = self._extract_message_thread_id(update)
+
+        if context and not message_thread_id:
+            thread_context = context.user_data.get("_thread_context", {})
+            thread_id = thread_context.get("message_thread_id")
+            if isinstance(thread_id, int):
+                message_thread_id = thread_id
+
+        return user_id, chat_id, message_thread_id
+
+    @staticmethod
+    def _get_claude_integration(context: ContextTypes.DEFAULT_TYPE) -> Any:
+        return context.bot_data.get("claude_integration")
+
+    def _get_interaction_bridge(self, context: ContextTypes.DEFAULT_TYPE) -> Any:
+        integration = self._get_claude_integration(context)
+        if not integration:
+            return None
+        manager = getattr(integration, "copilot_manager", None)
+        return getattr(manager, "interaction_bridge", None)
+
     async def _reject_for_thread_mode(self, update: Update, message: str) -> None:
         """Send a guidance response when strict thread routing rejects an update."""
         query = update.callback_query
@@ -291,6 +342,8 @@ class MessageOrchestrator:
             ("verbose", self.agentic_verbose),
             ("repo", self.agentic_repo),
             ("model", self.agentic_model),
+            ("provider", self.agentic_provider),
+            ("copilot", self.agentic_copilot),
         ]
         if self.settings.enable_project_threads:
             handlers.append(("sync_threads", command.sync_threads))
@@ -362,6 +415,9 @@ class MessageOrchestrator:
             ("pwd", command.print_working_directory),
             ("projects", command.show_projects),
             ("status", command.session_status),
+            ("provider", command.provider_command),
+            ("model", command.model_command),
+            ("copilot", command.copilot_command),
             ("export", command.export_session),
             ("actions", command.quick_actions),
             ("git", command.git_command),
@@ -393,7 +449,7 @@ class MessageOrchestrator:
             CallbackQueryHandler(self._inject_deps(callback.handle_callback_query))
         )
 
-        logger.info("Classic handlers registered (13 commands + full handler set)")
+        logger.info("Classic handlers registered (16 commands + full handler set)")
 
     async def get_bot_commands(self) -> list:  # type: ignore[type-arg]
         """Return bot commands appropriate for current mode."""
@@ -405,6 +461,8 @@ class MessageOrchestrator:
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("repo", "List repos / switch workspace"),
                 BotCommand("model", "Switch AI model (Copilot provider)"),
+                BotCommand("provider", "Switch provider (claude/copilot)"),
+                BotCommand("copilot", "Copilot status/control commands"),
             ]
             if self.settings.enable_project_threads:
                 commands.append(BotCommand("sync_threads", "Sync project topics"))
@@ -421,6 +479,9 @@ class MessageOrchestrator:
                 BotCommand("pwd", "Show current directory"),
                 BotCommand("projects", "Show all projects"),
                 BotCommand("status", "Show session status"),
+                BotCommand("provider", "Switch provider (claude/copilot)"),
+                BotCommand("model", "Switch Copilot model"),
+                BotCommand("copilot", "Copilot status/control commands"),
                 BotCommand("export", "Export current session"),
                 BotCommand("actions", "Show quick actions"),
                 BotCommand("git", "Git repository commands"),
@@ -480,7 +541,7 @@ class MessageOrchestrator:
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — I can read, write, and run code.\n\n"
             f"Working in: {dir_display}\n"
-            f"Commands: /new (reset) · /status"
+            f"Commands: /new (reset) · /status · /provider · /copilot"
             f"{sync_line}",
             parse_mode="HTML",
         )
@@ -506,6 +567,7 @@ class MessageOrchestrator:
 
         session_id = context.user_data.get("claude_session_id")
         session_status = "active" if session_id else "none"
+        snapshot = get_runtime_snapshot(self.settings, context.user_data)
 
         # Cost info
         cost_str = ""
@@ -520,7 +582,11 @@ class MessageOrchestrator:
                 pass
 
         await update.message.reply_text(
-            f"📂 {dir_display} · Session: {session_status}{cost_str}"
+            f"📂 {dir_display} · Session: {session_status}"
+            f" · Provider: {snapshot['provider']}"
+            f" · Model: {snapshot['model']}"
+            f" · Fallback: {snapshot['fallback_mode']}"
+            f"{cost_str}"
         )
 
     def _get_verbose_level(self, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -568,20 +634,18 @@ class MessageOrchestrator:
     async def agentic_model(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Switch AI model for the Copilot provider: /model [model_name]."""
+        """Switch Copilot model: /model <model_name> [once]."""
         from ..claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
 
         args = context.args or []
 
         if not args:
-            current = context.user_data.get(
-                "copilot_model", self.settings.copilot_model
-            )
+            current = context.user_data.get(SESSION_MODEL_KEY, self.settings.copilot_model)
             model_list = "\n".join(f"  <code>{m}</code>" for m in COPILOT_MODELS)
             await update.message.reply_text(
                 f"Current model: <code>{escape_html(current)}</code>\n\n"
                 f"<b>Available models:</b>\n{model_list}\n\n"
-                "Usage: <code>/model &lt;model_name&gt;</code>",
+                "Usage: <code>/model &lt;model_name&gt; [once]</code>",
                 parse_mode="HTML",
             )
             return
@@ -595,11 +659,267 @@ class MessageOrchestrator:
             )
             return
 
-        context.user_data["copilot_model"] = requested
+        once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
+        if once:
+            context.user_data[ONCE_MODEL_KEY] = requested
+        else:
+            context.user_data[SESSION_MODEL_KEY] = requested
         await update.message.reply_text(
-            f"Model switched to <code>{escape_html(requested)}</code>",
+            (
+                f"Model one-shot override set to <code>{escape_html(requested)}</code>"
+                if once
+                else f"Model switched to <code>{escape_html(requested)}</code>"
+            ),
             parse_mode="HTML",
         )
+
+    async def agentic_provider(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Switch provider: /provider <claude|copilot> [once]."""
+        args = context.args or []
+        current = context.user_data.get(SESSION_PROVIDER_KEY, self.settings.default_provider)
+
+        if not args:
+            await update.message.reply_text(
+                f"Current provider: <code>{escape_html(current)}</code>\n\n"
+                "Usage: <code>/provider claude|copilot [once]</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        requested = args[0].strip().lower()
+        if requested not in {"claude", "copilot"}:
+            await update.message.reply_text(
+                "Provider must be <code>claude</code> or <code>copilot</code>.",
+                parse_mode="HTML",
+            )
+            return
+
+        once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
+        if once:
+            context.user_data[ONCE_PROVIDER_KEY] = requested
+            text = f"Provider one-shot override set to <code>{requested}</code>"
+        else:
+            context.user_data[SESSION_PROVIDER_KEY] = requested
+            text = f"Provider switched to <code>{requested}</code>"
+        await update.message.reply_text(text, parse_mode="HTML")
+
+    async def agentic_copilot(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Copilot control-plane command."""
+        args = context.args or []
+        claude_integration = self._get_claude_integration(context)
+        if not claude_integration:
+            await update.message.reply_text("Claude integration not available.")
+            return
+
+        if not args:
+            await update.message.reply_text(
+                "<b>Copilot controls</b>\n\n"
+                "<code>/copilot status</code>\n"
+                "<code>/copilot sessions</code>\n"
+                "<code>/copilot delete &lt;session_id&gt;</code>\n"
+                "<code>/copilot reasoning low|medium|high [once]</code>\n"
+                "<code>/copilot skills show|add-dir|rm-dir|disable|enable ...</code>\n"
+                "<code>/copilot mcp raw|masked|omit</code>\n"
+                "<code>/copilot fallback sdk_only|sdk_then_cli</code>\n"
+                "<code>/copilot external &lt;url|off&gt;</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        sub = args[0].strip().lower()
+
+        if sub == "status":
+            status = await claude_integration.get_copilot_status()
+            snapshot = get_runtime_snapshot(self.settings, context.user_data)
+            await update.message.reply_text(
+                "<b>Copilot Status</b>\n\n"
+                f"Provider: <code>{escape_html(snapshot['provider'])}</code>\n"
+                f"Model: <code>{escape_html(snapshot['model'])}</code>\n"
+                f"Fallback: <code>{escape_html(snapshot['fallback_mode'])}</code>\n"
+                f"Reasoning: <code>{escape_html(str(snapshot['reasoning_effort']))}</code>\n"
+                f"MCP env mode: <code>{escape_html(str(snapshot['mcp_env_value_mode']))}</code>\n\n"
+                f"<pre>{escape_html(str(status))}</pre>",
+                parse_mode="HTML",
+            )
+            return
+
+        if sub == "sessions":
+            sessions = await claude_integration.list_copilot_sessions()
+            if not sessions:
+                await update.message.reply_text("No known Copilot sessions.")
+                return
+            lines = [
+                f"• <code>{escape_html(s.get('session_id', ''))}</code> "
+                f"(user={s.get('user_id')}, project=<code>{escape_html(str(s.get('project_path', '')))}</code>)"
+                for s in sessions[:50]
+            ]
+            await update.message.reply_text(
+                "<b>Copilot Sessions</b>\n\n" + "\n".join(lines),
+                parse_mode="HTML",
+            )
+            return
+
+        if sub == "delete":
+            if len(args) < 2:
+                await update.message.reply_text("Usage: /copilot delete <session_id>")
+                return
+            result = await claude_integration.delete_copilot_session(args[1].strip())
+            await update.message.reply_text(
+                f"Delete result: <pre>{escape_html(str(result))}</pre>",
+                parse_mode="HTML",
+            )
+            return
+
+        if sub == "reasoning":
+            if len(args) < 2:
+                current = context.user_data.get(
+                    SESSION_REASONING_KEY, self.settings.copilot_reasoning_default
+                )
+                await update.message.reply_text(
+                    f"Current reasoning: <code>{escape_html(str(current))}</code>\n"
+                    "Usage: <code>/copilot reasoning low|medium|high [once]</code>",
+                    parse_mode="HTML",
+                )
+                return
+            value = args[1].strip().lower()
+            if value not in {"low", "medium", "high"}:
+                await update.message.reply_text("Reasoning must be low, medium, or high.")
+                return
+            once = len(args) > 2 and args[2].strip().lower() in {"once", "--once", "-o"}
+            if once:
+                context.user_data[ONCE_REASONING_KEY] = value
+            else:
+                context.user_data[SESSION_REASONING_KEY] = value
+            claude_integration.update_copilot_runtime_controls(reasoning_effort=value)
+            await update.message.reply_text(
+                (
+                    f"Reasoning one-shot override: <code>{value}</code>"
+                    if once
+                    else f"Reasoning set to <code>{value}</code>"
+                ),
+                parse_mode="HTML",
+            )
+            return
+
+        if sub == "skills":
+            action = args[1].strip().lower() if len(args) > 1 else "show"
+            dirs = list(
+                context.user_data.get(
+                    SESSION_SKILL_DIRS_KEY, self.settings.copilot_skill_directories
+                )
+                or []
+            )
+            disabled = list(
+                context.user_data.get(
+                    SESSION_DISABLED_SKILLS_KEY, self.settings.copilot_disabled_skills
+                )
+                or []
+            )
+
+            if action == "show":
+                await update.message.reply_text(
+                    "<b>Copilot skills</b>\n\n"
+                    f"Directories: <code>{escape_html(', '.join(dirs) or '-')}</code>\n"
+                    f"Disabled: <code>{escape_html(', '.join(disabled) or '-')}</code>",
+                    parse_mode="HTML",
+                )
+                return
+
+            if len(args) < 3:
+                await update.message.reply_text(
+                    "Usage: /copilot skills add-dir|rm-dir|disable|enable <value>"
+                )
+                return
+            value = args[2].strip()
+            if action == "add-dir" and value not in dirs:
+                dirs.append(value)
+            elif action == "rm-dir":
+                dirs = [d for d in dirs if d != value]
+            elif action == "disable" and value not in disabled:
+                disabled.append(value)
+            elif action == "enable":
+                disabled = [s for s in disabled if s != value]
+            else:
+                await update.message.reply_text("Unknown skills action.")
+                return
+
+            context.user_data[SESSION_SKILL_DIRS_KEY] = dirs
+            context.user_data[SESSION_DISABLED_SKILLS_KEY] = disabled
+            claude_integration.update_copilot_runtime_controls(
+                skill_directories=dirs,
+                disabled_skills=disabled,
+            )
+            await update.message.reply_text("Skills runtime controls updated.")
+            return
+
+        if sub == "mcp":
+            if len(args) < 2:
+                current = context.user_data.get(
+                    SESSION_MCP_ENV_MODE_KEY, self.settings.mcp_env_value_mode
+                )
+                await update.message.reply_text(
+                    f"MCP env mode: <code>{escape_html(str(current))}</code>\n"
+                    "Usage: <code>/copilot mcp raw|masked|omit</code>",
+                    parse_mode="HTML",
+                )
+                return
+            mode = args[1].strip().lower()
+            if mode not in {"raw", "masked", "omit"}:
+                await update.message.reply_text("Mode must be raw, masked, or omit.")
+                return
+            context.user_data[SESSION_MCP_ENV_MODE_KEY] = mode
+            claude_integration.update_copilot_runtime_controls(mcp_env_value_mode=mode)
+            await update.message.reply_text(f"MCP env mode set to <code>{mode}</code>", parse_mode="HTML")
+            return
+
+        if sub == "external":
+            if len(args) < 2:
+                current = context.user_data.get(
+                    SESSION_EXTERNAL_SERVER_KEY, self.settings.copilot_external_cli_server
+                )
+                await update.message.reply_text(
+                    "Usage: <code>/copilot external &lt;url|off&gt;</code>\n"
+                    f"Current: <code>{escape_html(str(current or 'off'))}</code>",
+                    parse_mode="HTML",
+                )
+                return
+            endpoint = args[1].strip()
+            if endpoint.lower() == "off":
+                endpoint = ""
+            context.user_data[SESSION_EXTERNAL_SERVER_KEY] = endpoint or None
+            claude_integration.update_copilot_runtime_controls(
+                external_cli_server=(endpoint or None)
+            )
+            await update.message.reply_text(
+                f"External CLI server: <code>{escape_html(endpoint or 'off')}</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        if sub == "fallback":
+            if len(args) < 2:
+                await update.message.reply_text(
+                    f"Current fallback: <code>{escape_html(self.settings.copilot_fallback_mode)}</code>\n"
+                    "Usage: <code>/copilot fallback sdk_only|sdk_then_cli</code>",
+                    parse_mode="HTML",
+                )
+                return
+            mode = args[1].strip().lower()
+            if mode not in {"sdk_only", "sdk_then_cli"}:
+                await update.message.reply_text("Fallback must be sdk_only or sdk_then_cli.")
+                return
+            self.settings.copilot_fallback_mode = mode
+            await update.message.reply_text(
+                f"Fallback mode set to <code>{mode}</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        await update.message.reply_text("Unknown subcommand. Use /copilot for help.")
 
     def _format_verbose_progress(
         self,
@@ -717,35 +1037,44 @@ class MessageOrchestrator:
             # --- ask_user: Copilot needs input from the user mid-execution ---
             if update_obj.type == "ask_user" and context is not None:
                 meta = update_obj.metadata or {}
-                future = meta.get("future")
+                interaction_id = str(meta.get("interaction_id") or "")
                 choices: List[str] = meta.get("choices") or []
+                allow_freeform: bool = bool(meta.get("allow_freeform", True))
                 question = update_obj.content or "Copilot needs more information:"
 
-                if future is not None and not future.done():
-                    context.user_data["pending_ask_user"] = future
+                if interaction_id:
+                    context.user_data["pending_ask_user_interaction_id"] = interaction_id
 
-                    reply_markup = None
-                    if choices:
-                        keyboard = [
-                            [InlineKeyboardButton(c, callback_data=f"ask_user:{c}")]
-                            for c in choices
+                reply_markup = None
+                if choices and interaction_id:
+                    keyboard = [
+                        [
+                            InlineKeyboardButton(
+                                c, callback_data=f"ask_user:{interaction_id}:{idx}"
+                            )
                         ]
-                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        for idx, c in enumerate(choices)
+                    ]
+                    reply_markup = InlineKeyboardMarkup(keyboard)
 
-                    try:
-                        await progress_msg.edit_text(
-                            f"❓ <b>Copilot asks:</b>\n{escape_html(question)}",
-                            parse_mode="HTML",
-                            reply_markup=reply_markup,
-                        )
-                    except Exception:
-                        pass
+                suffix = ""
+                if allow_freeform:
+                    suffix = "\n\nReply with text to answer, or use a choice button."
+
+                try:
+                    await progress_msg.edit_text(
+                        f"❓ <b>Copilot asks:</b>\n{escape_html(question)}{suffix}",
+                        parse_mode="HTML",
+                        reply_markup=reply_markup,
+                    )
+                except Exception:
+                    pass
                 return
 
             # --- permission_request: Copilot wants to perform a privileged action ---
             if update_obj.type == "permission_request" and context is not None:
                 meta = update_obj.metadata or {}
-                future = meta.get("future")
+                interaction_id = str(meta.get("interaction_id") or "")
                 kind = meta.get("kind") or update_obj.content or "unknown"
 
                 _PERM_ICONS = {
@@ -757,26 +1086,35 @@ class MessageOrchestrator:
                 }
                 icon = _PERM_ICONS.get(kind, "🔐")
 
-                if future is not None and not future.done():
-                    context.user_data["pending_permission"] = future
+                if interaction_id:
+                    context.user_data["pending_permission_interaction_id"] = interaction_id
 
-                    keyboard = [[
-                        InlineKeyboardButton(
-                            "✅ Approve", callback_data=f"perm:approve:{kind}"
-                        ),
-                        InlineKeyboardButton(
-                            "❌ Deny", callback_data=f"perm:deny:{kind}"
-                        ),
-                    ]]
-                    try:
-                        await progress_msg.edit_text(
-                            f"{icon} <b>Permission request:</b> <code>{escape_html(kind)}</code>\n"
-                            "Allow Copilot to perform this action?",
-                            parse_mode="HTML",
-                            reply_markup=InlineKeyboardMarkup(keyboard),
-                        )
-                    except Exception:
-                        pass
+                keyboard = [[
+                    InlineKeyboardButton(
+                        "✅ Approve", callback_data=f"perm:{interaction_id}:approve"
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Deny", callback_data=f"perm:{interaction_id}:deny"
+                    ),
+                ]]
+                try:
+                    await progress_msg.edit_text(
+                        f"{icon} <b>Permission request:</b> <code>{escape_html(kind)}</code>\n"
+                        "Allow Copilot to perform this action?",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+                except Exception:
+                    pass
+                return
+
+            if update_obj.type == "context_changed":
+                tool_log.append(
+                    {
+                        "kind": "text",
+                        "detail": "⚠️ Copilot context changed; check /copilot status.",
+                    }
+                )
                 return
 
             if verbose_level == 0:
@@ -839,13 +1177,27 @@ class MessageOrchestrator:
         user_id = update.effective_user.id
         message_text = update.message.text
 
-        # --- ask_user: resolve a pending Copilot question with this message ---
-        pending_future = context.user_data.get("pending_ask_user")
-        if pending_future is not None and not pending_future.done():
-            context.user_data.pop("pending_ask_user", None)
-            pending_future.set_result(message_text)
-            logger.info("Resolved pending ask_user future", user_id=user_id)
-            return
+        # --- ask_user freeform: consume next message if interaction is pending ---
+        bridge = self._get_interaction_bridge(context)
+        if bridge:
+            scope_user, scope_chat, scope_thread = self._interaction_scope(
+                update=update, context=context
+            )
+            resolved_id = await bridge.resolve_pending_freeform(
+                user_id=scope_user,
+                chat_id=scope_chat,
+                message_thread_id=scope_thread,
+                value=message_text,
+            )
+            if resolved_id:
+                context.user_data.pop("pending_ask_user_interaction_id", None)
+                logger.info(
+                    "Resolved pending ask_user via freeform reply",
+                    user_id=user_id,
+                    interaction_id=resolved_id,
+                )
+                await update.message.reply_text("✅ Answer recorded. Continuing execution...")
+                return
 
         logger.info(
             "Agentic text message",
@@ -890,6 +1242,8 @@ class MessageOrchestrator:
             verbose_level, progress_msg, tool_log, start_time, context=context
         )
 
+        controls = consume_request_controls(self.settings, context.user_data)
+
         # Independent typing heartbeat — stays alive even with no stream events
         heartbeat = self._start_typing_heartbeat(chat)
 
@@ -899,10 +1253,18 @@ class MessageOrchestrator:
                 prompt=message_text,
                 working_directory=current_dir,
                 user_id=user_id,
+                chat_id=update.effective_chat.id if update.effective_chat else 0,
+                message_thread_id=self._extract_message_thread_id(update),
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
-                copilot_model=context.user_data.get("copilot_model"),
+                provider=controls["provider"],
+                copilot_model=controls["copilot_model"],
+                reasoning_effort=controls["reasoning_effort"],
+                skill_directories=controls["skill_directories"],
+                disabled_skills=controls["disabled_skills"],
+                mcp_env_value_mode=controls["mcp_env_value_mode"],
+                external_cli_server=controls["external_cli_server"],
             )
 
             # New session created successfully — clear the one-shot flag
@@ -1089,6 +1451,7 @@ class MessageOrchestrator:
         on_stream = self._make_stream_callback(
             verbose_level, progress_msg, tool_log, time.time(), context=context
         )
+        controls = consume_request_controls(self.settings, context.user_data)
 
         heartbeat = self._start_typing_heartbeat(chat)
         try:
@@ -1096,10 +1459,18 @@ class MessageOrchestrator:
                 prompt=prompt,
                 working_directory=current_dir,
                 user_id=user_id,
+                chat_id=update.effective_chat.id if update.effective_chat else 0,
+                message_thread_id=self._extract_message_thread_id(update),
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
-                copilot_model=context.user_data.get("copilot_model"),
+                provider=controls["provider"],
+                copilot_model=controls["copilot_model"],
+                reasoning_effort=controls["reasoning_effort"],
+                skill_directories=controls["skill_directories"],
+                disabled_skills=controls["disabled_skills"],
+                mcp_env_value_mode=controls["mcp_env_value_mode"],
+                external_cli_server=controls["external_cli_server"],
             )
 
             if force_new:
@@ -1182,11 +1553,12 @@ class MessageOrchestrator:
             # Check if /new was used — skip auto-resume for this first message.
             # Flag is only cleared after a successful run so retries keep the intent.
             force_new = bool(context.user_data.get("force_new_session"))
+            controls = consume_request_controls(self.settings, context.user_data)
 
             # For the Copilot provider, write image to a tmp file so it can be
             # passed as a file attachment in send_and_wait.
             image_path: Optional[str] = None
-            if self.settings.default_provider == "copilot":
+            if controls["provider"] == "copilot":
                 fmt = processed_image.metadata.get("format", "png") if processed_image.metadata else "png"
                 suffix = f".{fmt}" if fmt != "unknown" else ".png"
                 import base64  # noqa: PLC0415
@@ -1211,10 +1583,18 @@ class MessageOrchestrator:
                     prompt=processed_image.prompt,
                     working_directory=current_dir,
                     user_id=user_id,
+                    chat_id=update.effective_chat.id if update.effective_chat else 0,
+                    message_thread_id=self._extract_message_thread_id(update),
                     session_id=session_id,
                     on_stream=on_stream,
                     force_new=force_new,
-                    copilot_model=context.user_data.get("copilot_model"),
+                    provider=controls["provider"],
+                    copilot_model=controls["copilot_model"],
+                    reasoning_effort=controls["reasoning_effort"],
+                    skill_directories=controls["skill_directories"],
+                    disabled_skills=controls["disabled_skills"],
+                    mcp_env_value_mode=controls["mcp_env_value_mode"],
+                    external_cli_server=controls["external_cli_server"],
                     image_path=image_path,
                 )
             finally:
@@ -1362,32 +1742,48 @@ class MessageOrchestrator:
         query = update.callback_query
         await query.answer()
 
-        # data format: "perm:approve:<kind>" or "perm:deny:<kind>"
+        # data format: "perm:<interaction_id>:approve|deny"
         parts = (query.data or "").split(":", 2)
-        decision = parts[1] if len(parts) > 1 else "deny"
-        kind = parts[2] if len(parts) > 2 else "unknown"
+        interaction_id = parts[1] if len(parts) > 1 else ""
+        decision = parts[2] if len(parts) > 2 else "deny"
         approved = decision == "approve"
 
-        pending_future = context.user_data.get("pending_permission")
-        if pending_future is not None and not pending_future.done():
-            context.user_data.pop("pending_permission", None)
-            pending_future.set_result(approved)
+        bridge = self._get_interaction_bridge(context)
+        if not bridge or not interaction_id:
+            await query.answer("Interaction bridge unavailable.")
+            return
+
+        meta = await bridge.get(interaction_id) or {}
+        kind = meta.get("kind", "unknown")
+        scope_user, scope_chat, scope_thread = self._interaction_scope(
+            update=update, context=context
+        )
+        resolved = await bridge.resolve(
+            interaction_id=interaction_id,
+            value=approved,
+            user_id=scope_user,
+            chat_id=scope_chat,
+            message_thread_id=scope_thread,
+        )
+        if resolved:
+            context.user_data.pop("pending_permission_interaction_id", None)
             logger.info(
                 "Resolved permission_request",
-                user_id=update.effective_user.id,
+                user_id=scope_user,
+                interaction_id=interaction_id,
                 kind=kind,
                 approved=approved,
             )
             label = "✅ Approved" if approved else "❌ Denied"
             try:
                 await query.edit_message_text(
-                    f"{label}: <code>{escape_html(kind)}</code>",
+                    f"{label}: <code>{escape_html(str(kind))}</code>",
                     parse_mode="HTML",
                 )
             except Exception:
                 pass
         else:
-            await query.answer("This request has already been resolved.")
+            await query.answer("This request is expired or not in your scope.")
 
     async def _ask_user_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -1396,15 +1792,44 @@ class MessageOrchestrator:
         query = update.callback_query
         await query.answer()
 
-        choice = (query.data or "").split(":", 1)[-1]
-        pending_future = context.user_data.get("pending_ask_user")
+        # data format: "ask_user:<interaction_id>:<choice_index>"
+        parts = (query.data or "").split(":", 2)
+        interaction_id = parts[1] if len(parts) > 1 else ""
+        choice_index = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
 
-        if pending_future is not None and not pending_future.done():
-            context.user_data.pop("pending_ask_user", None)
-            pending_future.set_result(choice)
+        bridge = self._get_interaction_bridge(context)
+        if not bridge or not interaction_id:
+            await query.answer("Interaction bridge unavailable.")
+            return
+
+        meta = await bridge.get(interaction_id)
+        if not meta:
+            await query.answer("This question is no longer active.")
+            return
+
+        choices = list(meta.get("choices") or [])
+        if choice_index < 0 or choice_index >= len(choices):
+            await query.answer("Invalid choice.")
+            return
+
+        choice = choices[choice_index]
+        scope_user, scope_chat, scope_thread = self._interaction_scope(
+            update=update, context=context
+        )
+        resolved = await bridge.resolve(
+            interaction_id=interaction_id,
+            value=choice,
+            user_id=scope_user,
+            chat_id=scope_chat,
+            message_thread_id=scope_thread,
+        )
+
+        if resolved:
+            context.user_data.pop("pending_ask_user_interaction_id", None)
             logger.info(
                 "Resolved ask_user via inline choice",
-                user_id=update.effective_user.id,
+                user_id=scope_user,
+                interaction_id=interaction_id,
                 choice=choice,
             )
             try:

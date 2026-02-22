@@ -11,6 +11,7 @@ from ...claude.facade import ClaudeIntegration
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.validators import SecurityValidator
+from ..copilot_runtime import get_runtime_snapshot
 from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -66,6 +67,8 @@ async def handle_callback_query(
             "conversation": handle_conversation_callback,
             "git": handle_git_callback,
             "export": handle_export_callback,
+            "ask_user": handle_ask_user_callback,
+            "perm": handle_permission_callback,
         }
 
         handler = handlers.get(action)
@@ -285,6 +288,94 @@ async def handle_confirm_callback(
             "❓ <b>Unknown confirmation response</b>",
             parse_mode="HTML",
         )
+
+
+def _extract_callback_scope(query) -> tuple[int, int, Optional[int]]:
+    """Extract interaction scope from callback query."""
+    user_id = query.from_user.id if query and query.from_user else 0
+    chat_id = query.message.chat.id if query and query.message and query.message.chat else 0
+    message_thread_id = getattr(query.message, "message_thread_id", None) if query and query.message else None
+    if not isinstance(message_thread_id, int):
+        message_thread_id = None
+    return user_id, chat_id, message_thread_id
+
+
+async def handle_permission_callback(
+    query, payload: str, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Resolve Copilot permission interaction callback."""
+    parts = (query.data or "").split(":", 2)
+    interaction_id = parts[1] if len(parts) > 1 else ""
+    decision = parts[2] if len(parts) > 2 else "deny"
+    approved = decision == "approve"
+
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
+    bridge = getattr(getattr(claude_integration, "copilot_manager", None), "interaction_bridge", None)
+    if not bridge or not interaction_id:
+        await query.answer("Interaction bridge unavailable.")
+        return
+
+    meta = await bridge.get(interaction_id) or {}
+    user_id, chat_id, message_thread_id = _extract_callback_scope(query)
+    resolved = await bridge.resolve(
+        interaction_id=interaction_id,
+        value=approved,
+        user_id=user_id,
+        chat_id=chat_id,
+        message_thread_id=message_thread_id,
+    )
+    if not resolved:
+        await query.answer("This request is expired or out of scope.")
+        return
+
+    context.user_data.pop("pending_permission_interaction_id", None)
+    kind = str(meta.get("kind", "unknown"))
+    label = "✅ Approved" if approved else "❌ Denied"
+    await query.edit_message_text(
+        f"{label}: <code>{escape_html(kind)}</code>",
+        parse_mode="HTML",
+    )
+
+
+async def handle_ask_user_callback(
+    query, payload: str, context: ContextTypes.DEFAULT_TYPE
+) -> None:
+    """Resolve Copilot ask_user choice callback."""
+    parts = (query.data or "").split(":", 2)
+    interaction_id = parts[1] if len(parts) > 1 else ""
+    choice_index = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else -1
+
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
+    bridge = getattr(getattr(claude_integration, "copilot_manager", None), "interaction_bridge", None)
+    if not bridge or not interaction_id:
+        await query.answer("Interaction bridge unavailable.")
+        return
+
+    meta = await bridge.get(interaction_id)
+    if not meta:
+        await query.answer("This question is no longer active.")
+        return
+
+    choices = list(meta.get("choices") or [])
+    if choice_index < 0 or choice_index >= len(choices):
+        await query.answer("Invalid choice.")
+        return
+    choice = choices[choice_index]
+
+    user_id, chat_id, message_thread_id = _extract_callback_scope(query)
+    resolved = await bridge.resolve(
+        interaction_id=interaction_id,
+        value=choice,
+        user_id=user_id,
+        chat_id=chat_id,
+        message_thread_id=message_thread_id,
+    )
+    if not resolved:
+        await query.answer("This question is expired or out of scope.")
+        return
+
+    context.user_data.pop("pending_ask_user_interaction_id", None)
+    await query.edit_message_reply_markup(reply_markup=None)
 
 
 # Action handlers
@@ -645,6 +736,7 @@ async def _handle_status_action(query, context: ContextTypes.DEFAULT_TYPE) -> No
         "current_directory", settings.approved_directory
     )
     relative_path = current_dir.relative_to(settings.approved_directory)
+    snapshot = get_runtime_snapshot(settings, context.user_data)
 
     # Get usage info if rate limiter is available
     rate_limiter = context.bot_data.get("rate_limiter")
@@ -666,6 +758,9 @@ async def _handle_status_action(query, context: ContextTypes.DEFAULT_TYPE) -> No
         "",
         f"📂 Directory: <code>{escape_html(str(relative_path))}/</code>",
         f"🤖 Claude Session: {'✅ Active' if claude_session_id else '❌ None'}",
+        f"🧠 Provider: <code>{escape_html(snapshot['provider'])}</code>",
+        f"🧩 Model: <code>{escape_html(snapshot['model'])}</code>",
+        f"🛟 Fallback: <code>{escape_html(snapshot['fallback_mode'])}</code>",
         usage_info.rstrip(),
     ]
 

@@ -269,6 +269,78 @@ def test_log_level_validation():
         assert settings.log_level == "DEBUG"
 
 
+def test_default_provider_validation(tmp_path):
+    """default_provider accepts only claude or copilot."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        default_provider="copilot",
+    )
+    assert settings.default_provider == "copilot"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            default_provider="invalid-provider",
+        )
+
+
+def test_copilot_fallback_mode_validation(tmp_path):
+    """copilot_fallback_mode enforces sdk_only|sdk_then_cli."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_fallback_mode="sdk_only",
+    )
+    assert settings.copilot_fallback_mode == "sdk_only"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            copilot_fallback_mode="always",
+        )
+
+
+def test_copilot_runtime_policy_parsing(tmp_path):
+    """Copilot runtime policy fields parse and validate correctly."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_skill_directories="skills/a, skills/b",
+        copilot_disabled_skills="dangerous,legacy",
+        mcp_env_value_mode="masked",
+        copilot_session_store_path=str(tmp_path / "copilot-map.json"),
+    )
+    assert settings.copilot_skill_directories == ["skills/a", "skills/b"]
+    assert settings.copilot_disabled_skills == ["dangerous", "legacy"]
+    assert settings.mcp_env_value_mode == "masked"
+    assert settings.copilot_session_store_path.name == "copilot-map.json"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            mcp_env_value_mode="invalid",
+        )
+
+
 def test_project_threads_validation_requires_chat_id_in_group_mode(tmp_path):
     """Group thread mode requires project_threads_chat_id."""
     project_dir = tmp_path / "projects"

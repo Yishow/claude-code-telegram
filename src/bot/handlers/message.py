@@ -1,10 +1,13 @@
 """Message handlers for non-command inputs."""
 
 import asyncio
+import base64
+import os
+import tempfile
 from typing import Optional
 
 import structlog
-from telegram import Update
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.ext import ContextTypes
 
 from ...claude.exceptions import (
@@ -14,11 +17,14 @@ from ...claude.exceptions import (
     ClaudeProcessError,
     ClaudeSessionError,
     ClaudeTimeoutError,
+    ClaudeToolValidationError,
+    CopilotAuthenticationError,
 )
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.rate_limiter import RateLimiter
 from ...security.validators import SecurityValidator
+from ..copilot_runtime import consume_request_controls
 from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
@@ -116,6 +122,16 @@ def _format_error_message(error: Exception | str) -> str:
             "• Try breaking your request into smaller parts\n"
             "• Avoid asking for very large file operations in one go\n"
             "• Try again — transient slowdowns happen"
+        )
+
+    if isinstance(error_obj, CopilotAuthenticationError):
+        return (
+            "🔐 <b>Copilot Authentication Error</b>\n\n"
+            f"{escape_html(error_str)}\n\n"
+            "<b>What you can do:</b>\n"
+            "• Verify Copilot CLI login/authentication on the host\n"
+            "• Check configured Copilot account permissions\n"
+            "• Run <code>/copilot status</code> for diagnostics"
         )
 
     if isinstance(error_obj, ClaudeMCPError):
@@ -304,6 +320,31 @@ async def handle_text_message(
         "Processing text message", user_id=user_id, message_length=len(message_text)
     )
 
+    # If Copilot is waiting for freeform ask_user input in this scope,
+    # consume this message as the answer instead of starting a new run.
+    claude_integration = context.bot_data.get("claude_integration")
+    bridge = getattr(
+        getattr(claude_integration, "copilot_manager", None),
+        "interaction_bridge",
+        None,
+    )
+    if bridge and update.effective_chat:
+        message_thread_id = getattr(update.message, "message_thread_id", None)
+        if not isinstance(message_thread_id, int):
+            message_thread_id = None
+        resolved_id = await bridge.resolve_pending_freeform(
+            user_id=user_id,
+            chat_id=update.effective_chat.id,
+            message_thread_id=message_thread_id,
+            value=message_text,
+        )
+        if resolved_id:
+            context.user_data.pop("pending_ask_user_interaction_id", None)
+            await update.message.reply_text(
+                "✅ Answer recorded. Continuing Copilot execution..."
+            )
+            return
+
     try:
         # Check rate limit with estimated cost for text processing
         estimated_cost = _estimate_text_processing_cost(message_text)
@@ -349,10 +390,88 @@ async def handle_text_message(
         # Check if /new was used — skip auto-resume for this first message.
         # Flag is only cleared after a successful run so retries keep the intent.
         force_new = bool(context.user_data.get("force_new_session"))
+        controls = consume_request_controls(settings, context.user_data)
 
-        # Enhanced stream updates handler with progress tracking
+        # Enhanced stream updates handler with interactive bridge support
         async def stream_handler(update_obj):
             try:
+                if update_obj.type == "ask_user":
+                    meta = update_obj.metadata or {}
+                    interaction_id = str(meta.get("interaction_id") or "")
+                    choices = list(meta.get("choices") or [])
+                    allow_freeform = bool(meta.get("allow_freeform", True))
+                    question = update_obj.content or "Copilot asks:"
+
+                    if interaction_id:
+                        context.user_data["pending_ask_user_interaction_id"] = interaction_id
+
+                    reply_markup = None
+                    if interaction_id and choices:
+                        keyboard = [
+                            [
+                                InlineKeyboardButton(
+                                    choice,
+                                    callback_data=f"ask_user:{interaction_id}:{idx}",
+                                )
+                            ]
+                            for idx, choice in enumerate(choices)
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+
+                    suffix = (
+                        "\n\nReply with text to answer, or tap a choice."
+                        if allow_freeform
+                        else ""
+                    )
+                    await progress_msg.edit_text(
+                        f"❓ <b>Copilot asks:</b>\n{escape_html(question)}{suffix}",
+                        parse_mode="HTML",
+                        reply_markup=reply_markup,
+                    )
+                    return
+
+                if update_obj.type == "permission_request":
+                    meta = update_obj.metadata or {}
+                    interaction_id = str(meta.get("interaction_id") or "")
+                    kind = str(meta.get("kind") or update_obj.content or "unknown")
+                    if interaction_id:
+                        context.user_data["pending_permission_interaction_id"] = interaction_id
+                    keyboard = [[
+                        InlineKeyboardButton(
+                            "✅ Approve",
+                            callback_data=f"perm:{interaction_id}:approve",
+                        ),
+                        InlineKeyboardButton(
+                            "❌ Deny",
+                            callback_data=f"perm:{interaction_id}:deny",
+                        ),
+                    ]]
+                    await progress_msg.edit_text(
+                        "🔐 <b>Permission request</b>\n\n"
+                        f"Action: <code>{escape_html(kind)}</code>\n"
+                        "Allow Copilot to continue?",
+                        parse_mode="HTML",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+                    return
+
+                if update_obj.type == "context_changed":
+                    await update.message.reply_text(
+                        "⚠️ Copilot context changed. Use /copilot status or /new if behavior drifts."
+                    )
+                    return
+
+                if update_obj.type == "tool_denied":
+                    reason = ""
+                    if update_obj.metadata:
+                        reason = str(update_obj.metadata.get("reason") or "")
+                    await progress_msg.edit_text(
+                        "🚫 <b>Tool blocked by policy</b>\n\n"
+                        f"{escape_html(reason or 'The requested tool is not allowed.')}",
+                        parse_mode="HTML",
+                    )
+                    return
+
                 progress_text = await _format_progress_update(update_obj)
                 if progress_text:
                     await progress_msg.edit_text(progress_text, parse_mode="HTML")
@@ -365,9 +484,22 @@ async def handle_text_message(
                 prompt=message_text,
                 working_directory=current_dir,
                 user_id=user_id,
+                chat_id=update.effective_chat.id if update.effective_chat else 0,
+                message_thread_id=(
+                    update.message.message_thread_id
+                    if isinstance(getattr(update.message, "message_thread_id", None), int)
+                    else None
+                ),
                 session_id=session_id,
                 on_stream=stream_handler,
                 force_new=force_new,
+                provider=controls["provider"],
+                copilot_model=controls["copilot_model"],
+                reasoning_effort=controls["reasoning_effort"],
+                skill_directories=controls["skill_directories"],
+                disabled_skills=controls["disabled_skills"],
+                mcp_env_value_mode=controls["mcp_env_value_mode"],
+                external_cli_server=controls["external_cli_server"],
             )
 
             # New session created successfully — clear the one-shot flag
@@ -695,6 +827,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             "current_directory", settings.approved_directory
         )
         session_id = context.user_data.get("claude_session_id")
+        controls = consume_request_controls(settings, context.user_data)
 
         # Process with Claude
         try:
@@ -702,7 +835,20 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 prompt=prompt,
                 working_directory=current_dir,
                 user_id=user_id,
+                chat_id=update.effective_chat.id if update.effective_chat else 0,
+                message_thread_id=(
+                    update.message.message_thread_id
+                    if isinstance(getattr(update.message, "message_thread_id", None), int)
+                    else None
+                ),
                 session_id=session_id,
+                provider=controls["provider"],
+                copilot_model=controls["copilot_model"],
+                reasoning_effort=controls["reasoning_effort"],
+                skill_directories=controls["skill_directories"],
+                disabled_skills=controls["disabled_skills"],
+                mcp_env_value_mode=controls["mcp_env_value_mode"],
+                external_cli_server=controls["external_cli_server"],
             )
 
             # Update session ID
@@ -822,6 +968,24 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "current_directory", settings.approved_directory
             )
             session_id = context.user_data.get("claude_session_id")
+            controls = consume_request_controls(settings, context.user_data)
+            image_path: Optional[str] = None
+            tmp_path: Optional[str] = None
+            if controls["provider"] == "copilot":
+                fmt = (
+                    processed_image.metadata.get("format", "png")
+                    if processed_image.metadata
+                    else "png"
+                )
+                suffix = f".{fmt}" if fmt != "unknown" else ".png"
+                img_bytes = base64.b64decode(processed_image.base64_data)
+                fd, tmp_path = tempfile.mkstemp(suffix=suffix)
+                try:
+                    with os.fdopen(fd, "wb") as fh:
+                        fh.write(img_bytes)
+                    image_path = tmp_path
+                except Exception:
+                    os.close(fd)
 
             # Process with Claude
             try:
@@ -829,7 +993,21 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     prompt=processed_image.prompt,
                     working_directory=current_dir,
                     user_id=user_id,
+                    chat_id=update.effective_chat.id if update.effective_chat else 0,
+                    message_thread_id=(
+                        update.message.message_thread_id
+                        if isinstance(getattr(update.message, "message_thread_id", None), int)
+                        else None
+                    ),
                     session_id=session_id,
+                    provider=controls["provider"],
+                    copilot_model=controls["copilot_model"],
+                    reasoning_effort=controls["reasoning_effort"],
+                    skill_directories=controls["skill_directories"],
+                    disabled_skills=controls["disabled_skills"],
+                    mcp_env_value_mode=controls["mcp_env_value_mode"],
+                    external_cli_server=controls["external_cli_server"],
+                    image_path=image_path,
                 )
 
                 # Update session ID
@@ -867,6 +1045,12 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 logger.error(
                     "Claude image processing failed", error=str(e), user_id=user_id
                 )
+            finally:
+                if tmp_path:
+                    try:
+                        os.unlink(tmp_path)
+                    except Exception:
+                        pass
 
         except Exception as e:
             logger.error("Image processing failed", error=str(e), user_id=user_id)

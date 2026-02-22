@@ -1,11 +1,4 @@
-"""GitHub Copilot CLI integration.
-
-Features:
-- Async subprocess execution
-- Session management (reads session ID from ~/.copilot/session-state/)
-- Tool permission handling
-- Output parsing
-"""
+"""GitHub Copilot integration (SDK primary, CLI optional fallback)."""
 
 import asyncio
 import uuid
@@ -17,10 +10,10 @@ import structlog
 import yaml
 
 from ..config.settings import Settings
-from .exceptions import (
-    ClaudeProcessError,
-    ClaudeTimeoutError,
-)
+from .copilot_interaction_bridge import CopilotInteractionBridge
+from .copilot_sdk_integration import CopilotSDKManager, CopilotStreamUpdate
+from .exceptions import ClaudeProcessError, ClaudeTimeoutError
+from .monitor import ToolMonitor
 
 # Lazy import to avoid circular dependency; resolved at call time.
 _ClaudeResponse = None
@@ -77,38 +70,32 @@ class CopilotResponse:
     tools_used: List[Dict[str, Any]] = field(default_factory=list)
 
 
-@dataclass
-class CopilotStreamUpdate:
-    """Streaming update from Copilot CLI."""
-
-    type: str  # 'result', 'error'
-    content: Optional[str] = None
-    metadata: Optional[Dict] = None
-
-
 class CopilotProcessManager:
-    """Manage Copilot CLI subprocess execution."""
+    """Manage Copilot SDK execution with optional CLI fallback."""
 
-    def __init__(self, config: Settings):
-        """Initialize process manager with configuration."""
+    def __init__(
+        self,
+        config: Settings,
+        *,
+        tool_monitor: Optional[ToolMonitor] = None,
+        interaction_bridge: Optional[CopilotInteractionBridge] = None,
+    ):
         self.config = config
         self.active_processes: Dict[str, asyncio.subprocess.Process] = {}
+        self.interaction_bridge = interaction_bridge or CopilotInteractionBridge()
+        self.sdk_manager = CopilotSDKManager(
+            config,
+            interaction_bridge=self.interaction_bridge,
+            tool_monitor=tool_monitor,
+        )
 
     def _get_copilot_binary(self) -> str:
-        """Get Copilot CLI binary path."""
-        if (
-            hasattr(self.config, "copilot_binary_path")
-            and self.config.copilot_binary_path
-        ):
+        if getattr(self.config, "copilot_binary_path", None):
             return self.config.copilot_binary_path
         return "copilot"
 
     def _find_session_id_for_directory(self, working_directory: Path) -> Optional[str]:
-        """Find the most recent Copilot session ID for a given working directory.
-
-        Reads workspace.yaml from ~/.copilot/session-state/<uuid>/ to find
-        sessions matching the working directory, sorted by updated_at.
-        """
+        """Find the most recent Copilot session ID for a given working directory."""
         if not COPILOT_SESSION_DIR.exists():
             return None
 
@@ -122,7 +109,7 @@ class CopilotProcessManager:
             if not workspace_file.exists():
                 continue
             try:
-                with open(workspace_file) as f:
+                with open(workspace_file, encoding="utf-8") as f:
                     data = yaml.safe_load(f)
                 cwd = data.get("cwd", "")
                 updated_at = data.get("updated_at", "")
@@ -148,7 +135,6 @@ class CopilotProcessManager:
         """Execute Copilot CLI command."""
         start_time = asyncio.get_event_loop().time()
 
-        # Resolve session ID: use provided, or look up from filesystem
         resolved_session_id = session_id
         if continue_session and not resolved_session_id:
             resolved_session_id = self._find_session_id_for_directory(working_directory)
@@ -161,9 +147,8 @@ class CopilotProcessManager:
         )
 
         process_id = str(uuid.uuid4())
-
         logger.info(
-            "Starting Copilot process",
+            "Starting Copilot CLI process",
             process_id=process_id,
             working_directory=str(working_directory),
             session_id=resolved_session_id,
@@ -180,7 +165,7 @@ class CopilotProcessManager:
             )
             self.active_processes[process_id] = process
 
-            timeout = getattr(self.config, "claude_timeout_seconds", 300)
+            timeout = int(getattr(self.config, "claude_timeout_seconds", 300))
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(),
                 timeout=timeout,
@@ -189,63 +174,31 @@ class CopilotProcessManager:
             duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             return_code = process.returncode
 
-            stdout = (
-                stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            )
-            stderr = (
-                stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
-            )
+            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
 
             if return_code != 0 and not stdout.strip():
                 error_msg = stderr.strip() or f"Copilot exited with code {return_code}"
-                logger.error(
-                    "Copilot process failed", return_code=return_code, stderr=error_msg
-                )
+                logger.error("Copilot CLI process failed", return_code=return_code, stderr=error_msg)
                 raise ClaudeProcessError(f"Copilot error: {error_msg}")
 
             content = stdout.strip()
-
-            logger.info(
-                "Copilot process completed",
-                process_id=process_id,
-                duration_ms=duration_ms,
-            )
-
             if stream_callback:
                 try:
-                    asyncio.create_task(
-                        stream_callback(
-                            CopilotStreamUpdate(type="result", content=content)
-                        )
-                    )
+                    asyncio.create_task(stream_callback(CopilotStreamUpdate(type="result", content=content)))
                 except Exception:
                     pass
 
-            # Try to find the new session ID from filesystem after execution
-            new_session_id = (
-                self._find_session_id_for_directory(working_directory) or ""
-            )
-
-            return CopilotResponse(
-                content=content,
-                session_id=new_session_id,
-                duration_ms=duration_ms,
-            )
+            new_session_id = self._find_session_id_for_directory(working_directory) or ""
+            return CopilotResponse(content=content, session_id=new_session_id, duration_ms=duration_ms)
 
         except asyncio.TimeoutError:
             if process_id in self.active_processes:
                 self.active_processes[process_id].kill()
                 await self.active_processes[process_id].wait()
-            timeout = getattr(self.config, "claude_timeout_seconds", 300)
-            logger.error("Copilot process timed out", process_id=process_id)
+            timeout = int(getattr(self.config, "claude_timeout_seconds", 300))
+            logger.error("Copilot CLI process timed out", process_id=process_id)
             raise ClaudeTimeoutError(f"Copilot timed out after {timeout}s")
-
-        except ClaudeProcessError:
-            raise
-
-        except Exception as e:
-            logger.error("Copilot process failed", process_id=process_id, error=str(e))
-            raise
 
         finally:
             self.active_processes.pop(process_id, None)
@@ -257,11 +210,7 @@ class CopilotProcessManager:
         continue_session: bool,
         model: str,
     ) -> List[str]:
-        """Build Copilot CLI command.
-
-        Uses -p for new sessions and --resume <id> -p for continuations.
-        -s (silent) outputs only the agent response with no stats.
-        """
+        """Build Copilot CLI command."""
         cmd = [self._get_copilot_binary()]
 
         if continue_session and session_id:
@@ -282,14 +231,20 @@ class CopilotProcessManager:
         prompt: str,
         working_directory: Path,
         user_id: int = 0,
+        chat_id: int = 0,
+        message_thread_id: Optional[int] = None,
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable] = None,
         model: Optional[str] = None,
         image_path: Optional[str] = None,
+        reasoning_effort: Optional[str] = None,
+        skill_directories: Optional[List[str]] = None,
+        disabled_skills: Optional[List[str]] = None,
+        mcp_env_value_mode: Optional[str] = None,
+        external_cli_server: Optional[str] = None,
     ) -> Any:
-        """Execute command using Copilot SDK (with CLI fallback). Returns ClaudeResponse."""
-        from .copilot_sdk_integration import CopilotSDKManager  # noqa: PLC0415
+        """Execute command using Copilot SDK with configurable fallback policy."""
         from .sdk_integration import StreamUpdate  # noqa: PLC0415
 
         ClaudeResponse = _get_claude_response_class()
@@ -299,11 +254,9 @@ class CopilotProcessManager:
             working_directory=str(working_directory),
             session_id=session_id,
             continue_session=continue_session,
+            fallback_mode=getattr(self.config, "copilot_fallback_mode", "sdk_then_cli"),
         )
 
-        # Wrap stream_callback to convert CopilotStreamUpdate -> StreamUpdate so
-        # the facade's on_stream handler (which checks isinstance(update, StreamUpdate))
-        # can receive Copilot streaming updates.
         wrapped_callback: Optional[Callable] = None
         if stream_callback:
 
@@ -316,32 +269,56 @@ class CopilotProcessManager:
                     )
                 )
 
-        sdk_manager = CopilotSDKManager(self.config)
+        fallback_mode = getattr(self.config, "copilot_fallback_mode", "sdk_then_cli")
+
         try:
-            copilot_response = await sdk_manager.execute_command(
+            copilot_response = await self.sdk_manager.execute_command(
                 prompt=prompt,
                 working_directory=working_directory,
                 user_id=user_id,
+                chat_id=chat_id,
+                message_thread_id=message_thread_id,
                 session_id=session_id,
                 continue_session=continue_session,
                 stream_callback=wrapped_callback,
                 model=model,
                 image_path=image_path,
+                reasoning_effort=reasoning_effort,
+                skill_directories=skill_directories,
+                disabled_skills=disabled_skills,
+                mcp_env_value_mode=mcp_env_value_mode,
+                external_cli_server=external_cli_server,
             )
+            logger.info("Copilot execution completed via sdk", user_id=user_id)
+
         except Exception as sdk_error:
             logger.warning(
-                "Copilot SDK failed, falling back to CLI",
+                "Copilot SDK execution failed",
                 error=str(sdk_error),
+                fallback_mode=fallback_mode,
             )
-            # CLI fallback does not support image attachments — pass prompt only
-            copilot_response = await self.execute_command(
-                prompt=prompt,
-                working_directory=working_directory,
-                session_id=session_id,
-                continue_session=continue_session,
-                stream_callback=wrapped_callback,
-                model=model,
-            )
+
+            if fallback_mode == "sdk_only":
+                raise ClaudeProcessError(f"Copilot SDK failed (sdk_only mode): {sdk_error}")
+
+            logger.info("Attempting Copilot CLI fallback", user_id=user_id)
+            try:
+                copilot_response = await self.execute_command(
+                    prompt=prompt,
+                    working_directory=working_directory,
+                    session_id=session_id,
+                    continue_session=continue_session,
+                    stream_callback=wrapped_callback,
+                    model=model,
+                )
+                logger.info("Copilot CLI fallback succeeded", user_id=user_id)
+            except Exception as cli_error:
+                logger.error(
+                    "Copilot CLI fallback failed",
+                    user_id=user_id,
+                    error=str(cli_error),
+                )
+                raise
 
         return ClaudeResponse(
             content=copilot_response.content,
@@ -354,19 +331,48 @@ class CopilotProcessManager:
             tools_used=copilot_response.tools_used,
         )
 
+    async def get_status(self) -> Dict[str, Any]:
+        return await self.sdk_manager.get_status()
+
+    async def list_sessions(self) -> List[Dict[str, Any]]:
+        return await self.sdk_manager.list_sessions()
+
+    async def delete_session(self, session_id: str) -> Dict[str, Any]:
+        return await self.sdk_manager.delete_session(session_id)
+
+    def get_runtime_controls(self) -> Dict[str, Any]:
+        return self.sdk_manager.get_runtime_controls()
+
+    def update_runtime_controls(
+        self,
+        *,
+        reasoning_effort: Optional[str] = None,
+        skill_directories: Optional[List[str]] = None,
+        disabled_skills: Optional[List[str]] = None,
+        mcp_env_value_mode: Optional[str] = None,
+        external_cli_server: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self.sdk_manager.update_runtime_controls(
+            reasoning_effort=reasoning_effort,
+            skill_directories=skill_directories,
+            disabled_skills=disabled_skills,
+            mcp_env_value_mode=mcp_env_value_mode,
+            external_cli_server=external_cli_server,
+        )
+
     async def kill_all_processes(self) -> None:
-        """Kill all active processes."""
         logger.info("Killing all Copilot processes", count=len(self.active_processes))
         for process_id, process in list(self.active_processes.items()):
             try:
                 process.kill()
                 await process.wait()
             except Exception as e:
-                logger.warning(
-                    "Failed to kill process", process_id=process_id, error=str(e)
-                )
+                logger.warning("Failed to kill process", process_id=process_id, error=str(e))
         self.active_processes.clear()
 
     def get_active_process_count(self) -> int:
-        """Get number of active processes."""
         return len(self.active_processes)
+
+    async def shutdown(self) -> None:
+        await self.kill_all_processes()
+        await self.sdk_manager.shutdown()

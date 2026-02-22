@@ -82,6 +82,34 @@ class Settings(BaseSettings):
         None, description="Path to Copilot CLI binary"
     )
     copilot_model: str = Field("gpt-5.3-codex", description="Copilot model to use")
+    copilot_fallback_mode: Literal["sdk_only", "sdk_then_cli"] = Field(
+        "sdk_then_cli",
+        description="Copilot fallback policy: SDK only or SDK with CLI fallback",
+    )
+    copilot_external_cli_server: Optional[str] = Field(
+        None,
+        description="External Copilot CLI server endpoint (optional)",
+    )
+    copilot_config_dir_policy: Literal["global", "per_project"] = Field(
+        "global",
+        description="Copilot config dir policy for auth/cache isolation",
+    )
+    copilot_reasoning_default: Literal["low", "medium", "high"] = Field(
+        "medium",
+        description="Default Copilot reasoning effort",
+    )
+    copilot_skill_directories: Optional[List[str]] = Field(
+        default=[],
+        description="Additional Copilot skill directories",
+    )
+    copilot_disabled_skills: Optional[List[str]] = Field(
+        default=[],
+        description="Disabled Copilot skills",
+    )
+    copilot_session_store_path: Path = Field(
+        Path("data/copilot-session-map.json"),
+        description="Persistent store path for Copilot session map",
+    )
     copilot_infinite_sessions: bool = Field(
         True,
         description="Enable Copilot infinite sessions (auto context compaction)",
@@ -89,8 +117,10 @@ class Settings(BaseSettings):
     copilot_compaction_threshold: float = Field(
         0.80,
         description="Background compaction threshold (0.0-1.0) for infinite sessions",
+        ge=0.0,
+        le=1.0,
     )
-    default_provider: str = Field(
+    default_provider: Literal["claude", "copilot"] = Field(
         "claude", description="Default AI provider: claude or copilot"
     )
     claude_max_turns: int = Field(
@@ -175,6 +205,10 @@ class Settings(BaseSettings):
     enable_mcp: bool = Field(False, description="Enable Model Context Protocol")
     mcp_config_path: Optional[Path] = Field(
         None, description="MCP configuration file path"
+    )
+    mcp_env_value_mode: Literal["raw", "masked", "omit"] = Field(
+        "raw",
+        description="MCP env value mode for Copilot SDK server config",
     )
     enable_git_integration: bool = Field(True, description="Enable git commands")
     enable_file_uploads: bool = Field(True, description="Enable file upload handling")
@@ -263,10 +297,15 @@ class Settings(BaseSettings):
             return [int(uid) for uid in v]
         return v  # type: ignore[no-any-return]
 
-    @field_validator("claude_allowed_tools", mode="before")
+    @field_validator(
+        "claude_allowed_tools",
+        "copilot_skill_directories",
+        "copilot_disabled_skills",
+        mode="before",
+    )
     @classmethod
     def parse_claude_allowed_tools(cls, v: Any) -> Optional[List[str]]:
-        """Parse comma-separated tool names."""
+        """Parse comma-separated string lists."""
         if v is None:
             return None
         if isinstance(v, str):
@@ -274,6 +313,17 @@ class Settings(BaseSettings):
         if isinstance(v, list):
             return [str(tool) for tool in v]
         return v  # type: ignore[no-any-return]
+
+    @field_validator("copilot_external_cli_server", mode="before")
+    @classmethod
+    def normalize_optional_string(cls, v: Any) -> Optional[str]:
+        """Normalize optional string values."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            value = v.strip()
+            return value or None
+        return str(v)
 
     @field_validator("approved_directory")
     @classmethod
@@ -321,6 +371,19 @@ class Settings(BaseSettings):
                 "'mcpServers' must contain at least one server configuration"
             )
         return v  # type: ignore[no-any-return]
+
+    @field_validator("copilot_session_store_path", mode="before")
+    @classmethod
+    def validate_copilot_session_store_path(cls, v: Any) -> Path:
+        """Normalize Copilot session store path."""
+        if isinstance(v, str):
+            value = v.strip()
+            if not value:
+                raise ValueError("copilot_session_store_path cannot be empty")
+            v = Path(value)
+        if isinstance(v, Path):
+            return v
+        raise ValueError("copilot_session_store_path must be a valid filesystem path")
 
     @field_validator("projects_config_path", mode="before")
     @classmethod

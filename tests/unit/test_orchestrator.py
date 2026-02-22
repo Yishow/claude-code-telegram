@@ -82,8 +82,8 @@ def deps():
     }
 
 
-def test_agentic_registers_5_commands(agentic_settings, deps):
-    """Agentic mode registers start, new, status, verbose, repo commands."""
+def test_agentic_registers_8_commands(agentic_settings, deps):
+    """Agentic mode registers start/new/status/verbose/repo/model/provider/copilot."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -100,16 +100,19 @@ def test_agentic_registers_5_commands(agentic_settings, deps):
     ]
     commands = [h[0][0].commands for h in cmd_handlers]
 
-    assert len(cmd_handlers) == 5
+    assert len(cmd_handlers) == 8
     assert frozenset({"start"}) in commands
     assert frozenset({"new"}) in commands
     assert frozenset({"status"}) in commands
     assert frozenset({"verbose"}) in commands
     assert frozenset({"repo"}) in commands
+    assert frozenset({"model"}) in commands
+    assert frozenset({"provider"}) in commands
+    assert frozenset({"copilot"}) in commands
 
 
-def test_classic_registers_13_commands(classic_settings, deps):
-    """Classic mode registers all 13 commands."""
+def test_classic_registers_16_commands(classic_settings, deps):
+    """Classic mode registers all 16 commands."""
     orchestrator = MessageOrchestrator(classic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -124,7 +127,7 @@ def test_classic_registers_13_commands(classic_settings, deps):
         if isinstance(call[0][0], CommandHandler)
     ]
 
-    assert len(cmd_handlers) == 13
+    assert len(cmd_handlers) == 16
 
 
 def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
@@ -150,26 +153,35 @@ def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
 
     # 3 message handlers (text, document, photo)
     assert len(msg_handlers) == 3
-    # 1 callback handler (for cd: only)
-    assert len(cb_handlers) == 1
+    # 3 callback handlers (cd, ask_user, perm)
+    assert len(cb_handlers) == 3
 
 
 async def test_agentic_bot_commands(agentic_settings, deps):
-    """Agentic mode returns 5 bot commands."""
+    """Agentic mode returns 8 bot commands."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 5
+    assert len(commands) == 8
     cmd_names = [c.command for c in commands]
-    assert cmd_names == ["start", "new", "status", "verbose", "repo"]
+    assert cmd_names == [
+        "start",
+        "new",
+        "status",
+        "verbose",
+        "repo",
+        "model",
+        "provider",
+        "copilot",
+    ]
 
 
 async def test_classic_bot_commands(classic_settings, deps):
-    """Classic mode returns 13 bot commands."""
+    """Classic mode returns 16 bot commands."""
     orchestrator = MessageOrchestrator(classic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 13
+    assert len(commands) == 16
     cmd_names = [c.command for c in commands]
     assert "start" in cmd_names
     assert "help" in cmd_names
@@ -310,10 +322,11 @@ async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
         if isinstance(call[0][0], CallbackQueryHandler)
     ]
 
-    assert len(cb_handlers) == 1
-    # The pattern attribute should match cd: prefixed data
-    assert cb_handlers[0].pattern is not None
-    assert cb_handlers[0].pattern.match("cd:my_project")
+    assert len(cb_handlers) == 3
+    patterns = [h.pattern for h in cb_handlers if h.pattern is not None]
+    assert any(p.match("cd:my_project") for p in patterns)
+    assert any(p.match("ask_user:abc:0") for p in patterns)
+    assert any(p.match("perm:abc:approve") for p in patterns)
 
 
 async def test_agentic_document_rejects_large_files(agentic_settings, deps):

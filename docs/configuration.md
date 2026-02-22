@@ -77,6 +77,33 @@ CLAUDE_MAX_COST_PER_USER=10.0
 CLAUDE_ALLOWED_TOOLS=Read,Write,Edit,Bash,Glob,Grep,LS,Task,TaskOutput,MultiEdit,NotebookRead,NotebookEdit,WebFetch,TodoRead,TodoWrite,WebSearch
 ```
 
+#### Copilot Provider Configuration
+
+```bash
+# Provider defaults
+DEFAULT_PROVIDER=claude                 # claude|copilot
+COPILOT_MODEL=gpt-5.3-codex
+COPILOT_FALLBACK_MODE=sdk_then_cli      # sdk_only|sdk_then_cli
+
+# Runtime control defaults
+COPILOT_REASONING_DEFAULT=medium         # low|medium|high
+COPILOT_SKILL_DIRECTORIES=
+COPILOT_DISABLED_SKILLS=
+
+# Control-plane/runtime wiring
+COPILOT_EXTERNAL_CLI_SERVER=
+COPILOT_CONFIG_DIR_POLICY=global         # global|per_project
+COPILOT_SESSION_STORE_PATH=data/copilot-session-map.json
+
+# MCP forwarding policy for Copilot
+MCP_ENV_VALUE_MODE=raw                   # raw|masked|omit
+```
+
+Runtime override precedence:
+1. One-shot command override (e.g. `/provider ... once`, `/model ... once`)
+2. Session-scoped runtime command value
+3. Environment default (`.env` / process env)
+
 #### Rate Limiting
 
 ```bash
@@ -109,8 +136,8 @@ AUDIT_LOG_RETENTION_DAYS=365     # Days to keep audit logs
 
 ```bash
 # Agentic mode (default: true)
-# true = conversational mode with 3 commands (/start, /new, /status)
-# false = classic terminal mode with 13 commands and inline keyboards
+# true = conversational mode with runtime controls (/start, /new, /status, /provider, /model, /copilot, ...)
+# false = classic terminal mode with full command set and inline keyboards
 AGENTIC_MODE=true
 ```
 

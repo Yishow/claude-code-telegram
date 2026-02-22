@@ -261,3 +261,42 @@ class TestModelList:
 
     def test_gpt_models_in_list(self):
         assert "gpt-5-mini" in COPILOT_MODELS
+
+
+class TestExecuteFullFallbackPolicy:
+    async def test_sdk_only_mode_does_not_fallback(self, config, tmp_path):
+        config.copilot_fallback_mode = "sdk_only"
+        manager = CopilotProcessManager(config)
+        manager.sdk_manager.execute_command = AsyncMock(
+            side_effect=RuntimeError("sdk down")
+        )
+        manager.execute_command = AsyncMock()  # should never be called
+
+        with pytest.raises(ClaudeProcessError, match="sdk_only"):
+            await manager.execute_full(
+                prompt="hello",
+                working_directory=tmp_path,
+                user_id=1,
+            )
+
+        manager.execute_command.assert_not_called()
+
+    async def test_sdk_then_cli_mode_falls_back(self, config, tmp_path):
+        config.copilot_fallback_mode = "sdk_then_cli"
+        manager = CopilotProcessManager(config)
+        manager.sdk_manager.execute_command = AsyncMock(
+            side_effect=RuntimeError("sdk down")
+        )
+        from src.claude.copilot_integration import CopilotResponse
+
+        manager.execute_command = AsyncMock(
+            return_value=CopilotResponse(content="cli", session_id="s1")
+        )
+
+        result = await manager.execute_full(
+            prompt="hello",
+            working_directory=tmp_path,
+            user_id=1,
+        )
+        assert result.content == "cli"
+        manager.execute_command.assert_called_once()
