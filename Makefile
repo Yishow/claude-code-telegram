@@ -1,7 +1,7 @@
 .PHONY: install dev test lint format clean help run run-debug \
         run-remote remote-attach remote-stop \
         daemon-up daemon-install daemon-start daemon-stop daemon-restart daemon-status daemon-logs daemon-down daemon-uninstall daemon-print daemon-linger \
-        menu status feature-new sync-main repair-main sync sync-branch sync-abort sync-continue stash-pop \
+        menu status feature-new sync-main repair-main sync sync-branch sync-abort sync-continue stash-pop copilot-release-delta \
         stack-sync stack-feature \
         maintain
 
@@ -39,6 +39,7 @@ help:
 	@echo "  sync-abort     Abort an in-progress rebase"
 	@echo "  sync-continue  Continue after resolving rebase conflicts"
 	@echo "  stash-pop      Restore latest auto-stash created by workflow"
+	@echo "  copilot-release-delta  Fetch incremental github/copilot-sdk releases into dated changelog report"
 	@echo "  stack-sync     Sync main + rebase BASE cumulative branch onto main"
 	@echo "  stack-feature  Sync main + rebase BASE + create NEW stacked branch"
 	@echo ""
@@ -189,6 +190,9 @@ sync-continue:  ## Continue after manually resolving rebase conflicts
 
 stash-pop:  ## Restore latest workflow auto-stash
 	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) stash-pop
+
+copilot-release-delta:  ## Fetch incremental github/copilot-sdk releases and write dated changelog report
+	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) copilot-release-delta
 
 stack-sync:  ## Sync main from upstream and rebase BASE branch onto main
 	@test -n "$(BASE)" || (echo "Usage: make stack-sync BASE=feature/your-base-branch" && exit 1)

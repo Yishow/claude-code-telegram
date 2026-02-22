@@ -108,12 +108,16 @@ AUTO_YES=0 make menu
 
 The menu includes detailed explanations and examples for:
 
+- Pulling incremental updates from [github/copilot-sdk releases](https://github.com/github/copilot-sdk/releases) into dated files under `changelog/copilot-sdk/` with integration suggestions (`make copilot-release-delta`)
 - Checking upstream divergence (`make status`)
 - Creating a feature branch from latest `main` (`make feature-new NAME=<feature-name>`)
-- One-click sync (`make sync`: sync `main` with upstream, then rebase current feature branch)
+- One-click sync (`make sync`: first checks copilot-sdk release delta, then syncs `main` with upstream and rebases current feature branch)
 - Repairing `main` if it accidentally contains private commits (`make repair-main`: also switches to the new `feature/*` branch and restores the current auto-stash there)
 - Auto-stashing dirty changes when sync/rebase needs a clean worktree, then restoring with `make stash-pop`
 - Rebase recovery (`make sync-continue` / `make sync-abort`)
+
+Set `COPILOT_RELEASE_SYNC_ENABLED=0` if you want to skip the pre-sync release check temporarily.
+Generated reports in `changelog/copilot-sdk/` are git-ignored by default.
 
 ## Modes
 

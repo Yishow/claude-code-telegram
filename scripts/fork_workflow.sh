@@ -6,6 +6,9 @@ UPSTREAM_REMOTE="${UPSTREAM_REMOTE:-upstream}"
 UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-main}"
 LOCAL_MAIN_BRANCH="${LOCAL_MAIN_BRANCH:-main}"
 AUTO_YES="${AUTO_YES:-1}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+COPILOT_RELEASE_SYNC_ENABLED="${COPILOT_RELEASE_SYNC_ENABLED:-1}"
+COPILOT_RELEASE_FETCHER="${COPILOT_RELEASE_FETCHER:-${SCRIPT_DIR}/copilot_sdk_release_delta.py}"
 LAST_AUTO_STASH_REF=""
 LAST_AUTO_STASH_HANDLED="0"
 
@@ -27,6 +30,39 @@ is_auto_yes() {
     1|y|yes|true|on) return 0 ;;
     *) return 1 ;;
   esac
+}
+
+is_truthy() {
+  case "$(printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]')" in
+    1|y|yes|true|on) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+run_copilot_release_delta() {
+  if [ ! -f "$COPILOT_RELEASE_FETCHER" ]; then
+    warn "找不到 Copilot release 抓取腳本：${COPILOT_RELEASE_FETCHER}"
+    return 1
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    warn "找不到 python3，無法抓取 Copilot release 增量。"
+    return 1
+  fi
+
+  python3 "$COPILOT_RELEASE_FETCHER"
+}
+
+pre_sync_copilot_release_delta() {
+  if ! is_truthy "$COPILOT_RELEASE_SYNC_ENABLED"; then
+    info "略過 Copilot release 增量同步（COPILOT_RELEASE_SYNC_ENABLED=0）。"
+    return 0
+  fi
+
+  info "先抓 Copilot SDK release 增量並落檔..."
+  if ! run_copilot_release_delta; then
+    warn "Copilot release 增量同步失敗（不阻擋 fork workflow）。"
+    warn "可稍後手動執行：make copilot-release-delta"
+  fi
 }
 
 confirm_yes() {
@@ -178,6 +214,7 @@ show_status() {
 
 sync_main() {
   require_git_repo
+  pre_sync_copilot_release_delta
   ensure_not_in_progress
   ensure_clean_worktree
   ensure_local_main_exists
@@ -617,16 +654,34 @@ EOF
   make stash-pop
 EOF
       ;;
+    copilot-release-delta)
+      cat <<'EOF'
+[Copilot SDK release 增量同步]
+用途:
+  從 https://github.com/github/copilot-sdk/releases 抓取「相對上次狀態」的增量更新。
+  產出帶日期的報告檔，並附上整合新功能建議。
+
+會執行:
+  - 呼叫 scripts/copilot_sdk_release_delta.py
+  - 產出 changelog/copilot-sdk/<日期時間>.md
+  - 更新 changelog/copilot-sdk/.state.json
+
+範例:
+  make copilot-release-delta
+EOF
+      ;;
     best-practice)
       cat <<'EOF'
 [正式 fork 工作流]
 1) main 僅用來追 upstream，不放私有功能提交。
 2) 新功能一律在 feature/* 開發。
-3) 每次開工前跑 make sync。
-4) rebase 後推送使用 git push --force-with-lease（不要用 --force）。
-5) 若 main 已經混入私有提交，先跑 make repair-main 修復。
+3) 每次開工前先看 Copilot release 增量（make copilot-release-delta）。
+4) 日常同步跑 make sync（會先自動執行 Copilot release 增量抓取）。
+5) rebase 後推送使用 git push --force-with-lease（不要用 --force）。
+6) 若 main 已經混入私有提交，先跑 make repair-main 修復。
 
 常見節奏:
+  make copilot-release-delta
   make feature-new NAME=my-feature
   # 開發 + commit
   make sync
@@ -675,6 +730,7 @@ show_menu() {
 8) 顯示正式做法與範例
 9) main 有私有提交修復
 10) 還原自動暫存（stash pop）
+11) 抓 Copilot SDK release 增量（changelog/日期 + 整合建議）
 0) 離開
 EOF
 }
@@ -684,7 +740,7 @@ run_menu() {
     echo
     show_menu
     echo
-    read -r -p "請輸入選項 [0-10]: " choice
+    read -r -p "請輸入選項 [0-11]: " choice
 
     case "$choice" in
       1) confirm_run status show_status ;;
@@ -703,8 +759,9 @@ run_menu() {
         fi
         ;;
       10) confirm_run stash-pop stash_pop_auto ;;
+      11) confirm_run copilot-release-delta run_copilot_release_delta ;;
       0) info "已退出。"; return 0 ;;
-      *) warn "無效選項，請輸入 0-10。" ;;
+      *) warn "無效選項，請輸入 0-11。" ;;
     esac
   done
 }
@@ -722,6 +779,7 @@ Usage:
   scripts/fork_workflow.sh sync-continue
   scripts/fork_workflow.sh sync-abort
   scripts/fork_workflow.sh stash-pop
+  scripts/fork_workflow.sh copilot-release-delta
   scripts/fork_workflow.sh best-practice
 EOF
 }
@@ -739,6 +797,7 @@ main() {
     sync-continue) sync_continue ;;
     sync-abort) sync_abort ;;
     stash-pop) stash_pop_auto ;;
+    copilot-release-delta) run_copilot_release_delta ;;
     best-practice) show_action_details best-practice ;;
     help|-h|--help) usage ;;
     *) usage; die "未知指令: ${cmd}" ;;
