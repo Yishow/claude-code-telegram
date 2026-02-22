@@ -308,6 +308,84 @@ class DatabaseManager:
                     ON project_threads(project_slug);
                 """,
             ),
+            (
+                5,
+                """
+                -- Memory system+ tables
+                CREATE TABLE IF NOT EXISTS memory_items (
+                    memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL DEFAULT 0,
+                    message_thread_id INTEGER NOT NULL DEFAULT 0,
+                    project_path TEXT NOT NULL,
+                    memory_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    priority INTEGER DEFAULT 0,
+                    source_session_id TEXT,
+                    source_message_id INTEGER,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ttl_expires_at TIMESTAMP,
+                    conflict_with_id INTEGER,
+                    conflict_status TEXT DEFAULT 'none',
+                    is_active BOOLEAN DEFAULT TRUE,
+                    eviction_reason TEXT,
+                    FOREIGN KEY (source_message_id) REFERENCES messages(message_id),
+                    FOREIGN KEY (conflict_with_id) REFERENCES memory_items(memory_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_runtime_settings (
+                    scope_key TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL DEFAULT 0,
+                    message_thread_id INTEGER NOT NULL DEFAULT 0,
+                    memory_system_plus_enabled BOOLEAN DEFAULT FALSE,
+                    memory_hooks_enabled BOOLEAN DEFAULT TRUE,
+                    memory_pre_hook_enabled BOOLEAN DEFAULT TRUE,
+                    memory_post_hook_enabled BOOLEAN DEFAULT TRUE,
+                    memory_ai_enhancement_enabled BOOLEAN DEFAULT TRUE,
+                    memory_ai_extractor_enabled BOOLEAN DEFAULT TRUE,
+                    memory_ai_reranker_enabled BOOLEAN DEFAULT TRUE,
+                    memory_ai_conflict_detector_enabled BOOLEAN DEFAULT TRUE,
+                    memory_ai_periodic_review_enabled BOOLEAN DEFAULT TRUE,
+                    memory_profile TEXT DEFAULT 'balanced',
+                    memory_ai_model TEXT DEFAULT 'gpt-5-mini',
+                    memory_ai_timeout_seconds INTEGER DEFAULT 20,
+                    memory_recall_limit INTEGER DEFAULT 20,
+                    memory_injection_token_budget INTEGER DEFAULT 800,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, chat_id, message_thread_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS memory_events (
+                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL DEFAULT 0,
+                    message_thread_id INTEGER NOT NULL DEFAULT 0,
+                    project_path TEXT,
+                    event_type TEXT NOT NULL,
+                    event_payload JSON,
+                    fallback_reason TEXT,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_memory_items_scope
+                    ON memory_items(
+                        user_id,
+                        chat_id,
+                        message_thread_id,
+                        project_path,
+                        is_active
+                    );
+                CREATE INDEX IF NOT EXISTS idx_memory_items_ttl
+                    ON memory_items(ttl_expires_at);
+                CREATE INDEX IF NOT EXISTS idx_memory_runtime_scope
+                    ON memory_runtime_settings(user_id, chat_id, message_thread_id);
+                CREATE INDEX IF NOT EXISTS idx_memory_events_scope
+                    ON memory_events(user_id, chat_id, message_thread_id, timestamp);
+                CREATE INDEX IF NOT EXISTS idx_memory_events_type
+                    ON memory_events(event_type, timestamp);
+                """,
+            ),
         ]
 
     async def _init_pool(self):

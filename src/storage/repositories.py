@@ -8,7 +8,7 @@ Features:
 
 import json
 from datetime import UTC, datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import structlog
 
@@ -16,6 +16,9 @@ from .database import DatabaseManager
 from .models import (
     AuditLogModel,
     CostTrackingModel,
+    MemoryEventModel,
+    MemoryItemModel,
+    MemoryRuntimeSettingsModel,
     MessageModel,
     ProjectThreadModel,
     SessionModel,
@@ -380,6 +383,315 @@ class ProjectThreadRepository:
             cursor = await conn.execute(query, params)
             rows = await cursor.fetchall()
             return [ProjectThreadModel.from_row(row) for row in rows]
+
+
+class MemoryRepository:
+    """Memory system data access."""
+
+    def __init__(self, db_manager: DatabaseManager):
+        """Initialize repository."""
+        self.db = db_manager
+
+    @staticmethod
+    def build_scope_key(user_id: int, chat_id: int, message_thread_id: int = 0) -> str:
+        """Build stable scope key."""
+        return f"{user_id}:{chat_id}:{message_thread_id}"
+
+    async def get_runtime_settings(
+        self, user_id: int, chat_id: int, message_thread_id: int = 0
+    ) -> Optional[MemoryRuntimeSettingsModel]:
+        """Get memory runtime settings for a scope."""
+        scope_key = self.build_scope_key(user_id, chat_id, message_thread_id)
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM memory_runtime_settings
+                WHERE scope_key = ?
+            """,
+                (scope_key,),
+            )
+            row = await cursor.fetchone()
+            return MemoryRuntimeSettingsModel.from_row(row) if row else None
+
+    async def upsert_runtime_settings(
+        self, settings: MemoryRuntimeSettingsModel
+    ) -> MemoryRuntimeSettingsModel:
+        """Create or update runtime settings for a scope."""
+        async with self.db.get_connection() as conn:
+            await conn.execute(
+                """
+                INSERT INTO memory_runtime_settings (
+                    scope_key,
+                    user_id,
+                    chat_id,
+                    message_thread_id,
+                    memory_system_plus_enabled,
+                    memory_hooks_enabled,
+                    memory_pre_hook_enabled,
+                    memory_post_hook_enabled,
+                    memory_ai_enhancement_enabled,
+                    memory_ai_extractor_enabled,
+                    memory_ai_reranker_enabled,
+                    memory_ai_conflict_detector_enabled,
+                    memory_ai_periodic_review_enabled,
+                    memory_profile,
+                    memory_ai_model,
+                    memory_ai_timeout_seconds,
+                    memory_recall_limit,
+                    memory_injection_token_budget
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(scope_key) DO UPDATE SET
+                    memory_system_plus_enabled=excluded.memory_system_plus_enabled,
+                    memory_hooks_enabled=excluded.memory_hooks_enabled,
+                    memory_pre_hook_enabled=excluded.memory_pre_hook_enabled,
+                    memory_post_hook_enabled=excluded.memory_post_hook_enabled,
+                    memory_ai_enhancement_enabled=excluded.memory_ai_enhancement_enabled,
+                    memory_ai_extractor_enabled=excluded.memory_ai_extractor_enabled,
+                    memory_ai_reranker_enabled=excluded.memory_ai_reranker_enabled,
+                    memory_ai_conflict_detector_enabled=excluded.memory_ai_conflict_detector_enabled,
+                    memory_ai_periodic_review_enabled=excluded.memory_ai_periodic_review_enabled,
+                    memory_profile=excluded.memory_profile,
+                    memory_ai_model=excluded.memory_ai_model,
+                    memory_ai_timeout_seconds=excluded.memory_ai_timeout_seconds,
+                    memory_recall_limit=excluded.memory_recall_limit,
+                    memory_injection_token_budget=excluded.memory_injection_token_budget,
+                    updated_at=CURRENT_TIMESTAMP
+            """,
+                (
+                    settings.scope_key,
+                    settings.user_id,
+                    settings.chat_id,
+                    settings.message_thread_id,
+                    settings.memory_system_plus_enabled,
+                    settings.memory_hooks_enabled,
+                    settings.memory_pre_hook_enabled,
+                    settings.memory_post_hook_enabled,
+                    settings.memory_ai_enhancement_enabled,
+                    settings.memory_ai_extractor_enabled,
+                    settings.memory_ai_reranker_enabled,
+                    settings.memory_ai_conflict_detector_enabled,
+                    settings.memory_ai_periodic_review_enabled,
+                    settings.memory_profile,
+                    settings.memory_ai_model,
+                    settings.memory_ai_timeout_seconds,
+                    settings.memory_recall_limit,
+                    settings.memory_injection_token_budget,
+                ),
+            )
+            await conn.commit()
+
+        refreshed = await self.get_runtime_settings(
+            settings.user_id,
+            settings.chat_id,
+            settings.message_thread_id,
+        )
+        if not refreshed:
+            raise RuntimeError("Failed to upsert memory runtime settings")
+        return refreshed
+
+    async def save_memory_item(self, memory_item: MemoryItemModel) -> int:
+        """Persist a memory item and return memory_id."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO memory_items (
+                    user_id,
+                    chat_id,
+                    message_thread_id,
+                    project_path,
+                    memory_type,
+                    content,
+                    priority,
+                    source_session_id,
+                    source_message_id,
+                    timestamp,
+                    ttl_expires_at,
+                    conflict_with_id,
+                    conflict_status,
+                    is_active,
+                    eviction_reason
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    memory_item.user_id,
+                    memory_item.chat_id,
+                    memory_item.message_thread_id,
+                    memory_item.project_path,
+                    memory_item.memory_type,
+                    memory_item.content,
+                    memory_item.priority,
+                    memory_item.source_session_id,
+                    memory_item.source_message_id,
+                    memory_item.timestamp,
+                    memory_item.ttl_expires_at,
+                    memory_item.conflict_with_id,
+                    memory_item.conflict_status,
+                    memory_item.is_active,
+                    memory_item.eviction_reason,
+                ),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def save_memory_items(self, memory_items: List[MemoryItemModel]) -> List[int]:
+        """Persist multiple memory items."""
+        ids: List[int] = []
+        for item in memory_items:
+            ids.append(await self.save_memory_item(item))
+        return ids
+
+    async def get_recall_candidates(
+        self,
+        user_id: int,
+        chat_id: int,
+        message_thread_id: int,
+        project_path: str,
+        limit: int,
+        now: datetime,
+    ) -> List[MemoryItemModel]:
+        """Get active memory items for current scope and directory."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM memory_items
+                WHERE user_id = ?
+                  AND chat_id = ?
+                  AND message_thread_id = ?
+                  AND project_path = ?
+                  AND is_active = TRUE
+                  AND (
+                      ttl_expires_at IS NULL
+                      OR ttl_expires_at > ?
+                  )
+                ORDER BY priority DESC, timestamp DESC, memory_id DESC
+                LIMIT ?
+            """,
+                (
+                    user_id,
+                    chat_id,
+                    message_thread_id,
+                    project_path,
+                    now,
+                    limit,
+                ),
+            )
+            rows = await cursor.fetchall()
+            return [MemoryItemModel.from_row(row) for row in rows]
+
+    async def mark_expired_items(self, now: datetime) -> int:
+        """Evict expired memory items and mark reason."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE memory_items
+                SET is_active = FALSE,
+                    eviction_reason = COALESCE(eviction_reason, 'ttl_expired')
+                WHERE is_active = TRUE
+                  AND ttl_expires_at IS NOT NULL
+                  AND ttl_expires_at <= ?
+            """,
+                (now,),
+            )
+            await conn.commit()
+            return cursor.rowcount
+
+    async def mark_memory_conflict(
+        self,
+        memory_id: int,
+        conflict_with_id: int,
+        conflict_status: str = "conflict",
+    ) -> int:
+        """Mark conflict relationship for a memory item."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE memory_items
+                SET conflict_with_id = ?,
+                    conflict_status = ?
+                WHERE memory_id = ?
+            """,
+                (conflict_with_id, conflict_status, memory_id),
+            )
+            await conn.commit()
+            return cursor.rowcount
+
+    async def log_event(self, event: MemoryEventModel) -> int:
+        """Persist a structured memory event."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                INSERT INTO memory_events (
+                    user_id,
+                    chat_id,
+                    message_thread_id,
+                    project_path,
+                    event_type,
+                    event_payload,
+                    fallback_reason,
+                    timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (
+                    event.user_id,
+                    event.chat_id,
+                    event.message_thread_id,
+                    event.project_path,
+                    event.event_type,
+                    json.dumps(event.event_payload or {}),
+                    event.fallback_reason,
+                    event.timestamp,
+                ),
+            )
+            await conn.commit()
+            return cursor.lastrowid
+
+    async def get_recent_events(
+        self,
+        user_id: int,
+        chat_id: int,
+        message_thread_id: int = 0,
+        limit: int = 20,
+    ) -> List[MemoryEventModel]:
+        """Get recent memory events for a scope."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT * FROM memory_events
+                WHERE user_id = ?
+                  AND chat_id = ?
+                  AND message_thread_id = ?
+                ORDER BY timestamp DESC, event_id DESC
+                LIMIT ?
+            """,
+                (user_id, chat_id, message_thread_id, limit),
+            )
+            rows = await cursor.fetchall()
+            return [MemoryEventModel.from_row(row) for row in rows]
+
+    async def get_metrics_summary(self, hours: int = 24) -> Dict[str, Any]:
+        """Get basic memory pipeline metrics summary."""
+        async with self.db.get_connection() as conn:
+            cursor = await conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_events,
+                    SUM(CASE WHEN fallback_reason IS NOT NULL THEN 1 ELSE 0 END) AS fallback_events,
+                    SUM(CASE WHEN event_type = 'memory_assembly' THEN 1 ELSE 0 END) AS assembly_events,
+                    SUM(CASE WHEN event_type = 'memory_profile_switch' THEN 1 ELSE 0 END) AS profile_switch_events
+                FROM memory_events
+                WHERE timestamp >= datetime('now', '-' || ? || ' hours')
+            """,
+                (hours,),
+            )
+            row = await cursor.fetchone()
+            result = dict(row) if row else {}
+            return {
+                "hours": hours,
+                "total_events": int(result.get("total_events") or 0),
+                "fallback_events": int(result.get("fallback_events") or 0),
+                "assembly_events": int(result.get("assembly_events") or 0),
+                "profile_switch_events": int(result.get("profile_switch_events") or 0),
+            }
 
 
 class MessageRepository:

@@ -71,6 +71,11 @@ class FeatureFlags:
         """Check if agentic conversational mode is enabled."""
         return self.settings.agentic_mode
 
+    @property
+    def memory_system_plus_enabled(self) -> bool:
+        """Check if memory system plus is enabled."""
+        return self.settings.memory_system_plus
+
     def is_feature_enabled(self, feature_name: str) -> bool:
         """Generic feature check by name."""
         feature_map = {
@@ -85,6 +90,7 @@ class FeatureFlags:
             "api_server": self.api_server_enabled,
             "scheduler": self.scheduler_enabled,
             "agentic_mode": self.agentic_mode_enabled,
+            "memory_system_plus": self.memory_system_plus_enabled,
         }
         return feature_map.get(feature_name, False)
 
@@ -111,4 +117,6 @@ class FeatureFlags:
             features.append("api_server")
         if self.scheduler_enabled:
             features.append("scheduler")
+        if self.memory_system_plus_enabled:
+            features.append("memory_system_plus")
         return features

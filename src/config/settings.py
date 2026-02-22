@@ -224,6 +224,74 @@ class Settings(BaseSettings):
         True,
         description="Conversational agentic mode (default) vs classic command mode",
     )
+    memory_system_plus: bool = Field(
+        False,
+        description="Enable memory system plus hooks pipeline",
+    )
+    memory_hooks_enabled: bool = Field(
+        True,
+        description="Enable memory pre/post hooks when memory_system_plus is enabled",
+    )
+    memory_pre_hook_enabled: bool = Field(
+        True,
+        description="Enable pre-send memory assembly hook",
+    )
+    memory_post_hook_enabled: bool = Field(
+        True,
+        description="Enable post-response memory condensation hook",
+    )
+    memory_ai_enhancement_enabled: bool = Field(
+        True,
+        description="Enable AI enhancement layer for memory operations",
+    )
+    memory_ai_extractor_enabled: bool = Field(
+        True,
+        description="Enable AI extractor submodule for post-session condensation",
+    )
+    memory_ai_reranker_enabled: bool = Field(
+        True,
+        description="Enable AI reranker submodule for pre-session recall ordering",
+    )
+    memory_ai_conflict_detector_enabled: bool = Field(
+        True,
+        description="Enable AI conflict detector submodule for memory contradictions",
+    )
+    memory_ai_periodic_review_enabled: bool = Field(
+        True,
+        description="Enable AI periodic review submodule for memory quality checks",
+    )
+    memory_ai_model: str = Field(
+        "gpt-5-mini",
+        description="Default AI model used by memory enhancement modules",
+    )
+    memory_ai_timeout_seconds: int = Field(
+        20,
+        description="Timeout for memory AI enhancement requests in seconds",
+        ge=1,
+        le=120,
+    )
+    memory_profile_default: Literal["fast", "balanced", "quality"] = Field(
+        "balanced",
+        description="Default memory AI profile",
+    )
+    memory_recall_limit: int = Field(
+        20,
+        description="Maximum number of memory candidates recalled before assembly",
+        ge=1,
+        le=200,
+    )
+    memory_injection_token_budget: int = Field(
+        800,
+        description="Approximate token budget for injected memory context",
+        ge=100,
+        le=8000,
+    )
+    memory_retention_days: int = Field(
+        30,
+        description="Default retention period in days for memory entries",
+        ge=1,
+        le=3650,
+    )
 
     # Output verbosity (0=quiet, 1=normal, 2=detailed)
     verbose_level: int = Field(
@@ -339,9 +407,7 @@ class Settings(BaseSettings):
                     parsed = json.loads(value)
                     if isinstance(parsed, list):
                         return [
-                            str(item).strip()
-                            for item in parsed
-                            if str(item).strip()
+                            str(item).strip() for item in parsed if str(item).strip()
                         ]
                 except json.JSONDecodeError:
                     pass

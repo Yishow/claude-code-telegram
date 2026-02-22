@@ -8,6 +8,9 @@ import pytest
 
 from src.storage.database import DatabaseManager
 from src.storage.models import (
+    MemoryEventModel,
+    MemoryItemModel,
+    MemoryRuntimeSettingsModel,
     MessageModel,
     ProjectThreadModel,
     SessionModel,
@@ -17,6 +20,7 @@ from src.storage.models import (
 from src.storage.repositories import (
     AnalyticsRepository,
     AuditLogRepository,
+    MemoryRepository,
     MessageRepository,
     ProjectThreadRepository,
     SessionRepository,
@@ -70,6 +74,12 @@ async def audit_repo(db_manager):
 async def analytics_repo(db_manager):
     """Create analytics repository."""
     return AnalyticsRepository(db_manager)
+
+
+@pytest.fixture
+async def memory_repo(db_manager):
+    """Create memory repository."""
+    return MemoryRepository(db_manager)
 
 
 @pytest.fixture
@@ -488,6 +498,142 @@ class TestToolUsageRepository:
         assert read_stats["usage_count"] == 3
         assert read_stats["success_count"] == 3
         assert read_stats["error_count"] == 0
+
+
+class TestMemoryRepository:
+    """Test memory repository."""
+
+    async def test_upsert_and_get_runtime_settings(self, memory_repo):
+        """Runtime settings are persisted by scope key."""
+        settings = MemoryRuntimeSettingsModel(
+            scope_key=memory_repo.build_scope_key(101, -200, 0),
+            user_id=101,
+            chat_id=-200,
+            message_thread_id=0,
+            memory_system_plus_enabled=True,
+            memory_hooks_enabled=True,
+            memory_pre_hook_enabled=True,
+            memory_post_hook_enabled=True,
+            memory_ai_enhancement_enabled=True,
+            memory_ai_extractor_enabled=True,
+            memory_ai_reranker_enabled=False,
+            memory_ai_conflict_detector_enabled=True,
+            memory_ai_periodic_review_enabled=False,
+            memory_profile="fast",
+            memory_ai_model="gpt-5-mini",
+            memory_ai_timeout_seconds=15,
+            memory_recall_limit=12,
+            memory_injection_token_budget=500,
+        )
+
+        await memory_repo.upsert_runtime_settings(settings)
+        loaded = await memory_repo.get_runtime_settings(101, -200, 0)
+
+        assert loaded is not None
+        assert loaded.memory_system_plus_enabled is True
+        assert loaded.memory_ai_reranker_enabled is False
+        assert loaded.memory_profile == "fast"
+        assert loaded.memory_recall_limit == 12
+
+    async def test_recall_candidates_are_scope_and_ttl_filtered(self, memory_repo):
+        """Recall must be isolated by scope/project and skip expired entries."""
+        now = datetime.now(UTC)
+        await memory_repo.save_memory_items(
+            [
+                MemoryItemModel(
+                    user_id=201,
+                    chat_id=-300,
+                    message_thread_id=1,
+                    project_path="/a",
+                    memory_type="fact",
+                    content="keep-a",
+                    priority=10,
+                    timestamp=now,
+                    ttl_expires_at=now + timedelta(days=2),
+                ),
+                MemoryItemModel(
+                    user_id=201,
+                    chat_id=-300,
+                    message_thread_id=1,
+                    project_path="/a",
+                    memory_type="fact",
+                    content="expired-a",
+                    priority=20,
+                    timestamp=now - timedelta(days=5),
+                    ttl_expires_at=now - timedelta(minutes=1),
+                ),
+                MemoryItemModel(
+                    user_id=201,
+                    chat_id=-300,
+                    message_thread_id=2,
+                    project_path="/a",
+                    memory_type="fact",
+                    content="wrong-thread",
+                    priority=30,
+                    timestamp=now,
+                    ttl_expires_at=now + timedelta(days=2),
+                ),
+                MemoryItemModel(
+                    user_id=201,
+                    chat_id=-300,
+                    message_thread_id=1,
+                    project_path="/b",
+                    memory_type="fact",
+                    content="wrong-project",
+                    priority=30,
+                    timestamp=now,
+                    ttl_expires_at=now + timedelta(days=2),
+                ),
+            ]
+        )
+
+        candidates = await memory_repo.get_recall_candidates(
+            user_id=201,
+            chat_id=-300,
+            message_thread_id=1,
+            project_path="/a",
+            limit=10,
+            now=now,
+        )
+
+        assert len(candidates) == 1
+        assert candidates[0].content == "keep-a"
+
+    async def test_mark_expired_items_and_log_event(self, memory_repo):
+        """Expired item cleanup and event logging should work."""
+        now = datetime.now(UTC)
+        await memory_repo.save_memory_item(
+            MemoryItemModel(
+                user_id=301,
+                chat_id=-400,
+                message_thread_id=0,
+                project_path="/demo",
+                memory_type="todo",
+                content="expired-todo",
+                timestamp=now - timedelta(days=2),
+                ttl_expires_at=now - timedelta(hours=1),
+            )
+        )
+
+        marked = await memory_repo.mark_expired_items(now)
+        assert marked == 1
+
+        event_id = await memory_repo.log_event(
+            MemoryEventModel(
+                user_id=301,
+                chat_id=-400,
+                message_thread_id=0,
+                project_path="/demo",
+                event_type="memory_fallback",
+                event_payload={"reason": "timeout"},
+                fallback_reason="timeout",
+                timestamp=now,
+            )
+        )
+        assert event_id > 0
+
+        metrics = await memory_repo.get_metrics_summary(hours=24)
+        assert metrics["fallback_events"] >= 1
 
 
 class TestAnalyticsRepository:

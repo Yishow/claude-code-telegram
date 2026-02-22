@@ -26,6 +26,23 @@ def _parse_datetime(value: Any) -> Any:
     return value
 
 
+def _parse_bool(value: Any, default: bool = False) -> bool:
+    """Parse boolean-like values from SQLite rows."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    return default
+
+
 @dataclass
 class UserModel:
     """User data model."""
@@ -311,3 +328,133 @@ class UserTokenModel:
         if not self.expires_at:
             return False
         return datetime.now(UTC) > self.expires_at
+
+
+@dataclass
+class MemoryItemModel:
+    """Structured long-term memory item model."""
+
+    user_id: int
+    chat_id: int
+    project_path: str
+    memory_type: str
+    content: str
+    timestamp: datetime
+    memory_id: Optional[int] = None
+    message_thread_id: int = 0
+    priority: int = 0
+    source_session_id: Optional[str] = None
+    source_message_id: Optional[int] = None
+    ttl_expires_at: Optional[datetime] = None
+    conflict_with_id: Optional[int] = None
+    conflict_status: str = "none"
+    is_active: bool = True
+    eviction_reason: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        data = asdict(self)
+        for key in ["timestamp", "ttl_expires_at"]:
+            if data.get(key):
+                data[key] = data[key].isoformat()
+        return data
+
+    @classmethod
+    def from_row(cls, row: aiosqlite.Row) -> "MemoryItemModel":
+        """Create model from row."""
+        data = dict(row)
+        data["timestamp"] = _parse_datetime(data.get("timestamp"))
+        data["ttl_expires_at"] = _parse_datetime(data.get("ttl_expires_at"))
+        data["is_active"] = _parse_bool(data.get("is_active"), default=True)
+        return cls(**data)
+
+
+@dataclass
+class MemoryRuntimeSettingsModel:
+    """Runtime memory control settings persisted by conversation scope."""
+
+    scope_key: str
+    user_id: int
+    chat_id: int
+    message_thread_id: int
+    memory_system_plus_enabled: bool
+    memory_hooks_enabled: bool
+    memory_pre_hook_enabled: bool
+    memory_post_hook_enabled: bool
+    memory_ai_enhancement_enabled: bool
+    memory_ai_extractor_enabled: bool
+    memory_ai_reranker_enabled: bool
+    memory_ai_conflict_detector_enabled: bool
+    memory_ai_periodic_review_enabled: bool
+    memory_profile: str
+    memory_ai_model: str
+    memory_ai_timeout_seconds: int
+    memory_recall_limit: int
+    memory_injection_token_budget: int
+    updated_at: Optional[datetime] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        data = asdict(self)
+        if data.get("updated_at"):
+            data["updated_at"] = data["updated_at"].isoformat()
+        return data
+
+    @classmethod
+    def from_row(cls, row: aiosqlite.Row) -> "MemoryRuntimeSettingsModel":
+        """Create model from row."""
+        data = dict(row)
+        data["updated_at"] = _parse_datetime(data.get("updated_at"))
+        boolean_defaults = {
+            "memory_system_plus_enabled": False,
+            "memory_hooks_enabled": True,
+            "memory_pre_hook_enabled": True,
+            "memory_post_hook_enabled": True,
+            "memory_ai_enhancement_enabled": True,
+            "memory_ai_extractor_enabled": True,
+            "memory_ai_reranker_enabled": True,
+            "memory_ai_conflict_detector_enabled": True,
+            "memory_ai_periodic_review_enabled": True,
+        }
+        for field, default in boolean_defaults.items():
+            data[field] = _parse_bool(data.get(field), default=default)
+        return cls(**data)
+
+
+@dataclass
+class MemoryEventModel:
+    """Structured observability event for memory pipeline actions."""
+
+    user_id: int
+    chat_id: int
+    event_type: str
+    event_payload: Dict[str, Any]
+    timestamp: datetime
+    event_id: Optional[int] = None
+    message_thread_id: int = 0
+    project_path: Optional[str] = None
+    fallback_reason: Optional[str] = None
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary."""
+        data = asdict(self)
+        if data["timestamp"]:
+            data["timestamp"] = data["timestamp"].isoformat()
+        if data["event_payload"] is not None:
+            data["event_payload"] = json.dumps(data["event_payload"])
+        return data
+
+    @classmethod
+    def from_row(cls, row: aiosqlite.Row) -> "MemoryEventModel":
+        """Create model from row."""
+        data = dict(row)
+        data["timestamp"] = _parse_datetime(data.get("timestamp"))
+        payload = data.get("event_payload")
+        if payload:
+            try:
+                data["event_payload"] = json.loads(payload)
+            except (json.JSONDecodeError, TypeError):
+                data["event_payload"] = {}
+        else:
+            data["event_payload"] = {}
+        return cls(**data)

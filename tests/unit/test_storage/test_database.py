@@ -54,6 +54,9 @@ class TestDatabaseManager:
                 "user_tokens",
                 "cost_tracking",
                 "project_threads",
+                "memory_items",
+                "memory_runtime_settings",
+                "memory_events",
                 "schema_version",
             ]
 
@@ -86,6 +89,11 @@ class TestDatabaseManager:
                 "idx_cost_tracking_user_date",
                 "idx_project_threads_chat_active",
                 "idx_project_threads_slug",
+                "idx_memory_items_scope",
+                "idx_memory_items_ttl",
+                "idx_memory_runtime_scope",
+                "idx_memory_events_scope",
+                "idx_memory_events_type",
             ]
 
             for index in expected_indexes:

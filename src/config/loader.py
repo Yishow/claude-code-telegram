@@ -169,6 +169,8 @@ def _get_enabled_features_summary(settings: Settings) -> list[str]:
         features.append("file_uploads")
     if settings.enable_quick_actions:
         features.append("quick_actions")
+    if settings.memory_system_plus:
+        features.append("memory_system_plus")
     if settings.enable_token_auth:
         features.append("token_auth")
     if settings.webhook_url:

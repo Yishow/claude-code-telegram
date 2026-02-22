@@ -12,6 +12,8 @@ from ..claude.sdk_integration import ClaudeResponse
 from .database import DatabaseManager
 from .models import (
     AuditLogModel,
+    MemoryEventModel,
+    MemoryRuntimeSettingsModel,
     MessageModel,
     SessionModel,
     ToolUsageModel,
@@ -21,6 +23,7 @@ from .repositories import (
     AnalyticsRepository,
     AuditLogRepository,
     CostTrackingRepository,
+    MemoryRepository,
     MessageRepository,
     ProjectThreadRepository,
     SessionRepository,
@@ -44,6 +47,7 @@ class Storage:
         self.tools = ToolUsageRepository(self.db_manager)
         self.audit = AuditLogRepository(self.db_manager)
         self.costs = CostTrackingRepository(self.db_manager)
+        self.memory = MemoryRepository(self.db_manager)
         self.analytics = AnalyticsRepository(self.db_manager)
 
     async def initialize(self):
@@ -305,6 +309,24 @@ class Storage:
             "recent_audit": [a.to_dict() for a in audit_logs],
             "daily_costs": [c.to_dict() for c in daily_costs],
         }
+
+    async def get_memory_runtime_settings(
+        self, user_id: int, chat_id: int, message_thread_id: int = 0
+    ) -> Optional[MemoryRuntimeSettingsModel]:
+        """Get persisted memory runtime settings for scope."""
+        return await self.memory.get_runtime_settings(
+            user_id, chat_id, message_thread_id
+        )
+
+    async def save_memory_runtime_settings(
+        self, settings: MemoryRuntimeSettingsModel
+    ) -> MemoryRuntimeSettingsModel:
+        """Persist memory runtime settings for scope."""
+        return await self.memory.upsert_runtime_settings(settings)
+
+    async def log_memory_event(self, event: MemoryEventModel) -> int:
+        """Persist a memory observability event."""
+        return await self.memory.log_event(event)
 
     async def get_admin_dashboard(self) -> Dict[str, Any]:
         """Get admin dashboard data."""

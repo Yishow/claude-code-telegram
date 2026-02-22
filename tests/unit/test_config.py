@@ -429,6 +429,63 @@ def test_copilot_prerelease_opt_in_flag(tmp_path):
     assert settings.copilot_enable_prerelease_features is True
 
 
+def test_memory_system_plus_settings_defaults_and_overrides(tmp_path):
+    """Memory system plus settings should have safe defaults and accept overrides."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    defaults = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+    )
+    assert defaults.memory_system_plus is False
+    assert defaults.memory_hooks_enabled is True
+    assert defaults.memory_ai_enhancement_enabled is True
+    assert defaults.memory_ai_model == "gpt-5-mini"
+    assert defaults.memory_profile_default == "balanced"
+
+    overridden = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        memory_system_plus=True,
+        memory_hooks_enabled=False,
+        memory_ai_enhancement_enabled=False,
+        memory_profile_default="quality",
+        memory_recall_limit=12,
+        memory_injection_token_budget=1200,
+    )
+    assert overridden.memory_system_plus is True
+    assert overridden.memory_hooks_enabled is False
+    assert overridden.memory_ai_enhancement_enabled is False
+    assert overridden.memory_profile_default == "quality"
+    assert overridden.memory_recall_limit == 12
+    assert overridden.memory_injection_token_budget == 1200
+
+
+def test_memory_profile_default_validation(tmp_path):
+    """memory_profile_default accepts only fast|balanced|quality."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        memory_profile_default="fast",
+    )
+    assert settings.memory_profile_default == "fast"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            memory_profile_default="turbo",
+        )
+
+
 def test_project_threads_validation_requires_chat_id_in_group_mode(tmp_path):
     """Group thread mode requires project_threads_chat_id."""
     project_dir = tmp_path / "projects"
@@ -670,19 +727,30 @@ def test_feature_flags():
     assert features.git_enabled is True
     assert features.file_uploads_enabled is False
     assert features.token_auth_enabled is True
+    assert features.memory_system_plus_enabled is False
 
     enabled_features = features.get_enabled_features()
     assert "mcp" in enabled_features
     assert "git" in enabled_features
     assert "file_uploads" not in enabled_features
     assert "token_auth" in enabled_features
+    assert "memory_system_plus" not in enabled_features
 
     # Test generic feature check
     assert features.is_feature_enabled("git") is True
+    assert features.is_feature_enabled("memory_system_plus") is False
     assert features.is_feature_enabled("nonexistent") is False
 
     # Cleanup test file
     Path("/tmp/test_mcp.json").unlink(missing_ok=True)
+
+
+def test_feature_flags_memory_system_plus_enabled():
+    """Feature flags should expose memory_system_plus when enabled."""
+    settings = create_test_config(memory_system_plus=True)
+    features = FeatureFlags(settings)
+    assert features.memory_system_plus_enabled is True
+    assert "memory_system_plus" in features.get_enabled_features()
 
 
 def test_environment_loading():
