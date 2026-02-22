@@ -148,6 +148,60 @@ class MessageOrchestrator:
 
         return wrapped
 
+    def _is_within_repo_root(self, path: Path) -> bool:
+        """Return whether path stays inside approved directory root."""
+        root = self.settings.approved_directory.resolve()
+        try:
+            path.resolve().relative_to(root)
+            return True
+        except ValueError:
+            return False
+
+    def _repo_relative_display(self, path: Path) -> str:
+        """Render path relative to approved root for Telegram output."""
+        root = self.settings.approved_directory.resolve()
+        relative = path.resolve().relative_to(root)
+        return "/" if str(relative) == "." else f"{relative}/"
+
+    def _resolve_repo_target(self, selector: str, current_dir: Path) -> Optional[Path]:
+        """Resolve /repo target from current directory while enforcing root boundary."""
+        root = self.settings.approved_directory.resolve()
+        safe_current = current_dir.resolve()
+        if not self._is_within_repo_root(safe_current):
+            safe_current = root
+
+        selector = selector.strip()
+        if selector == "/":
+            candidate = root
+        elif selector == "..":
+            candidate = safe_current.parent
+        elif selector.startswith("/"):
+            candidate = root / selector.lstrip("/")
+        else:
+            candidate = safe_current / selector
+
+        resolved = candidate.resolve()
+        if not self._is_within_repo_root(resolved):
+            return None
+        return resolved
+
+    async def _set_current_directory(
+        self, context: ContextTypes.DEFAULT_TYPE, user_id: int, target_path: Path
+    ) -> Optional[str]:
+        """Switch current directory and auto-resume session if available."""
+        context.user_data["current_directory"] = target_path
+
+        claude_integration = context.bot_data.get("claude_integration")
+        session_id = None
+        if claude_integration:
+            existing = await claude_integration._find_resumable_session(
+                user_id, target_path
+            )
+            if existing:
+                session_id = existing.session_id
+        context.user_data["claude_session_id"] = session_id
+        return session_id
+
     async def _apply_thread_routing_context(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> bool:
@@ -1465,19 +1519,29 @@ class MessageOrchestrator:
     async def agentic_repo(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """List repos in workspace or switch to one.
+        """List subdirectories in current workspace path or switch directory.
 
         /repo          — list subdirectories with git indicators
-        /repo <name>   — switch to that directory, resume session if available
+        /repo <path>   — switch relative to current directory, resume session
         """
         args = update.message.text.split()[1:] if update.message.text else []
-        base = self.settings.approved_directory
-        current_dir = context.user_data.get("current_directory", base)
+        root = self.settings.approved_directory.resolve()
+        current_dir = context.user_data.get("current_directory", root)
+        if not isinstance(current_dir, Path):
+            current_dir = root
+        if not current_dir.is_dir() or not self._is_within_repo_root(current_dir):
+            current_dir = root
+            context.user_data["current_directory"] = root
 
         if args:
-            # Switch to named repo
-            target_name = args[0]
-            target_path = base / target_name
+            target_name = " ".join(args).strip()
+            target_path = self._resolve_repo_target(target_name, current_dir)
+            if not target_path:
+                await update.message.reply_text(
+                    "Access denied: target directory is outside approved root.",
+                    parse_mode="HTML",
+                )
+                return
             if not target_path.is_dir():
                 await update.message.reply_text(
                     f"Directory not found: <code>{escape_html(target_name)}</code>",
@@ -1485,25 +1549,17 @@ class MessageOrchestrator:
                 )
                 return
 
-            context.user_data["current_directory"] = target_path
-
-            # Try to find a resumable session
-            claude_integration = context.bot_data.get("claude_integration")
-            session_id = None
-            if claude_integration:
-                existing = await claude_integration._find_resumable_session(
-                    update.effective_user.id, target_path
-                )
-                if existing:
-                    session_id = existing.session_id
-            context.user_data["claude_session_id"] = session_id
+            session_id = await self._set_current_directory(
+                context, update.effective_user.id, target_path
+            )
 
             is_git = (target_path / ".git").is_dir()
             git_badge = " (git)" if is_git else ""
             session_badge = " · session resumed" if session_id else ""
+            relative_display = self._repo_relative_display(target_path)
 
             await update.message.reply_text(
-                f"Switched to <code>{escape_html(target_name)}/</code>"
+                f"Switched to <code>{escape_html(relative_display)}</code>"
                 f"{git_badge}{session_badge}",
                 parse_mode="HTML",
             )
@@ -1514,7 +1570,7 @@ class MessageOrchestrator:
             entries = sorted(
                 [
                     d
-                    for d in base.iterdir()
+                    for d in current_dir.iterdir()
                     if d.is_dir() and not d.name.startswith(".")
                 ],
                 key=lambda d: d.name,
@@ -1523,23 +1579,24 @@ class MessageOrchestrator:
             await update.message.reply_text(f"Error reading workspace: {e}")
             return
 
+        current_display = self._repo_relative_display(current_dir)
         if not entries:
             await update.message.reply_text(
-                f"No repos in <code>{escape_html(str(base))}</code>.\n"
-                'Clone one by telling me, e.g. <i>"clone org/repo"</i>.',
+                f"<b>Repos</b>\n\n"
+                f"Current: <code>{escape_html(current_display)}</code>\n"
+                f"Root: <code>{escape_html(str(root))}</code>\n\n"
+                "No subdirectories here.",
                 parse_mode="HTML",
             )
             return
 
         lines: List[str] = []
         keyboard_rows: List[list] = []  # type: ignore[type-arg]
-        current_name = current_dir.name if current_dir != base else None
 
         for d in entries:
             is_git = (d / ".git").is_dir()
             icon = "\U0001f4e6" if is_git else "\U0001f4c1"
-            marker = " \u25c0" if d.name == current_name else ""
-            lines.append(f"{icon} <code>{escape_html(d.name)}/</code>{marker}")
+            lines.append(f"{icon} <code>{escape_html(d.name)}/</code>")
 
         # Build inline keyboard (2 per row)
         for i in range(0, len(entries), 2):
@@ -1550,10 +1607,19 @@ class MessageOrchestrator:
                     row.append(InlineKeyboardButton(name, callback_data=f"cd:{name}"))
             keyboard_rows.append(row)
 
+        nav_row = []
+        if current_dir != root:
+            nav_row.append(InlineKeyboardButton("⬆️ Up", callback_data="cd:.."))
+        nav_row.append(InlineKeyboardButton("🏠 Root", callback_data="cd:/"))
+        keyboard_rows.append(nav_row)
+
         reply_markup = InlineKeyboardMarkup(keyboard_rows)
 
         await update.message.reply_text(
-            "<b>Repos</b>\n\n" + "\n".join(lines),
+            "<b>Repos</b>\n\n"
+            f"Current: <code>{escape_html(current_display)}</code>\n"
+            f"Root: <code>{escape_html(str(root))}</code>\n\n"
+            + "\n".join(lines),
             parse_mode="HTML",
             reply_markup=reply_markup,
         )
@@ -1672,8 +1738,20 @@ class MessageOrchestrator:
         data = query.data
         _, project_name = data.split(":", 1)
 
-        base = self.settings.approved_directory
-        new_path = base / project_name
+        root = self.settings.approved_directory.resolve()
+        current_dir = context.user_data.get("current_directory", root)
+        if not isinstance(current_dir, Path):
+            current_dir = root
+        if not current_dir.is_dir() or not self._is_within_repo_root(current_dir):
+            current_dir = root
+
+        new_path = self._resolve_repo_target(project_name, current_dir)
+        if not new_path:
+            await query.edit_message_text(
+                "Access denied: target directory is outside approved root.",
+                parse_mode="HTML",
+            )
+            return
 
         if not new_path.is_dir():
             await query.edit_message_text(
@@ -1682,25 +1760,17 @@ class MessageOrchestrator:
             )
             return
 
-        context.user_data["current_directory"] = new_path
-
-        # Look for a resumable session instead of always clearing
-        claude_integration = context.bot_data.get("claude_integration")
-        session_id = None
-        if claude_integration:
-            existing = await claude_integration._find_resumable_session(
-                query.from_user.id, new_path
-            )
-            if existing:
-                session_id = existing.session_id
-        context.user_data["claude_session_id"] = session_id
+        session_id = await self._set_current_directory(
+            context, query.from_user.id, new_path
+        )
 
         is_git = (new_path / ".git").is_dir()
         git_badge = " (git)" if is_git else ""
         session_badge = " · session resumed" if session_id else ""
+        relative_display = self._repo_relative_display(new_path)
 
         await query.edit_message_text(
-            f"Switched to <code>{escape_html(project_name)}/</code>"
+            f"Switched to <code>{escape_html(relative_display)}</code>"
             f"{git_badge}{session_badge}",
             parse_mode="HTML",
         )

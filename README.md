@@ -183,7 +183,7 @@ You: Create a fix branch and push it
 Bot: [Claude creates branch, commits, pushes]
 ```
 
-Use `/repo` to list cloned repos in your workspace, or `/repo <name>` to switch directories (sessions auto-resume).
+Use `/repo` to list subdirectories under your current workspace path, `/repo <path>` to switch directories relative to where you are, `cd:..` to go up, and `cd:/` to jump back to your `.env` root (sessions auto-resume).
 
 ### Classic Mode
 
