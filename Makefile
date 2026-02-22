@@ -2,6 +2,7 @@
         run-remote remote-attach remote-stop \
         daemon-up daemon-install daemon-start daemon-stop daemon-restart daemon-status daemon-logs daemon-down daemon-uninstall daemon-print daemon-linger \
         menu status feature-new sync-main repair-main sync sync-branch sync-abort sync-continue stash-pop \
+        stack-sync stack-feature \
         maintain
 
 UPSTREAM_REPO := https://github.com/RichardAtCT/claude-code-telegram.git
@@ -35,6 +36,8 @@ help:
 	@echo "  sync-abort     Abort an in-progress rebase"
 	@echo "  sync-continue  Continue after resolving rebase conflicts"
 	@echo "  stash-pop      Restore latest auto-stash created by workflow"
+	@echo "  stack-sync     Sync main + rebase BASE cumulative branch onto main"
+	@echo "  stack-feature  Sync main + rebase BASE + create NEW stacked branch"
 	@echo ""
 	@echo "Maintenance"
 	@echo "  maintain       sync + dev + lint + test (fails fast)"
@@ -183,6 +186,34 @@ sync-continue:  ## Continue after manually resolving rebase conflicts
 
 stash-pop:  ## Restore latest workflow auto-stash
 	@UPSTREAM_REPO_DEFAULT="$(UPSTREAM_REPO)" bash $(FORK_WORKFLOW) stash-pop
+
+stack-sync:  ## Sync main from upstream and rebase BASE branch onto main
+	@test -n "$(BASE)" || (echo "Usage: make stack-sync BASE=feature/your-base-branch" && exit 1)
+	@if ! git diff --quiet || ! git diff --cached --quiet; then \
+		echo "Working tree has tracked changes. Commit/stash first."; \
+		exit 1; \
+	fi
+	git fetch upstream
+	git checkout main
+	git merge --ff-only upstream/main
+	git checkout "$(BASE)"
+	git rebase main
+	@echo "Base branch $(BASE) now contains: upstream/main + your fork commits"
+
+stack-feature:  ## Sync/rebase BASE and create NEW stacked branch
+	@test -n "$(BASE)" || (echo "Usage: make stack-feature BASE=feature/base NEW=feature/new" && exit 1)
+	@test -n "$(NEW)" || (echo "Usage: make stack-feature BASE=feature/base NEW=feature/new" && exit 1)
+	@if ! git diff --quiet || ! git diff --cached --quiet; then \
+		echo "Working tree has tracked changes. Commit/stash first."; \
+		exit 1; \
+	fi
+	git fetch upstream
+	git checkout main
+	git merge --ff-only upstream/main
+	git checkout "$(BASE)"
+	git rebase main
+	git checkout -b "$(NEW)"
+	@echo "Created $(NEW) from cumulative base $(BASE)"
 
 # ---------------------------------------------------------------------------
 # Maintenance

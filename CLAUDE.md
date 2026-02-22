@@ -21,6 +21,8 @@ make daemon-uninstall # Remove persistent service unit file
 make test             # Run tests with coverage
 make lint             # Black + isort + flake8 + mypy
 make format           # Auto-format with black + isort
+make stack-sync       # Sync main with upstream and rebase BASE branch on top
+make stack-feature    # Create NEW feature branch from rebased BASE branch
 
 # Run a single test
 poetry run pytest tests/unit/test_config.py -k test_name -v
@@ -28,6 +30,37 @@ poetry run pytest tests/unit/test_config.py -k test_name -v
 # Type checking only
 poetry run mypy src
 ```
+
+## Fork Stack Workflow (Required)
+
+This repository is maintained as a long-lived fork and uses a **cumulative feature stack** workflow.
+
+- New work MUST include:
+  - latest `upstream/main`
+  - your existing fork customizations (from previous feature base)
+- Do not start a new feature directly from old `main` if you already have fork-only features to keep.
+
+### Required flow for every new feature
+
+1. Pick a base feature branch that already contains your fork customizations (example: `feature/fork-workflow-menu`).
+2. Sync upstream to local main:
+   - `git fetch upstream`
+   - `git checkout main`
+   - `git merge --ff-only upstream/main`
+3. Rebase the base feature branch onto refreshed main:
+   - `git checkout <base-feature>`
+   - `git rebase main`
+4. Create the new feature from that rebased base branch:
+   - `git checkout -b feature/<new-feature>`
+5. Implement, test, and commit on the new feature branch.
+6. Next time, repeat the same pattern using the latest cumulative base branch.
+
+### One-command helpers
+
+- Sync cumulative base branch:
+  - `make stack-sync BASE=feature/fork-workflow-menu`
+- Create next cumulative feature branch:
+  - `make stack-feature BASE=feature/fork-workflow-menu NEW=feature/my-next-feature`
 
 ## Architecture
 

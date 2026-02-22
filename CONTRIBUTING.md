@@ -52,7 +52,31 @@ This project is currently under active development with the following status:
 1. **Check existing issues** for similar work
 2. **Create an issue** if none exists
 3. **Comment on the issue** to indicate you're working on it
-4. **Create a feature branch** from main
+4. **Create a feature branch** using the fork stack workflow below
+
+### Fork Stack Workflow (Required for this fork)
+
+New feature branches must include both:
+
+- latest `upstream/main`
+- existing fork customizations from your cumulative base feature branch
+
+Use one of the following:
+
+```bash
+# One-step helper
+make stack-feature BASE=feature/fork-workflow-menu NEW=feature/my-next-change
+
+# Or manually
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git checkout feature/fork-workflow-menu
+git rebase main
+git checkout -b feature/my-next-change
+```
+
+For the next change, reuse the latest cumulative feature branch as `BASE` and repeat.
 
 ### Making Changes
 

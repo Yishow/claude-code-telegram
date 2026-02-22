@@ -66,6 +66,37 @@ This document provides detailed information for developers working on the Claude
    make lint
    ```
 
+### Fork Stack Workflow (Cumulative Features)
+
+For this fork, every new feature branch should be based on:
+
+- latest `upstream/main`
+- your existing fork customizations (from your cumulative base feature branch)
+
+Recommended command flow:
+
+```bash
+# Option A: sync base branch first
+make stack-sync BASE=feature/fork-workflow-menu
+git checkout -b feature/my-next-change
+
+# Option B: one command to create next branch
+make stack-feature BASE=feature/fork-workflow-menu NEW=feature/my-next-change
+```
+
+Equivalent manual flow:
+
+```bash
+git fetch upstream
+git checkout main
+git merge --ff-only upstream/main
+git checkout feature/fork-workflow-menu
+git rebase main
+git checkout -b feature/my-next-change
+```
+
+Repeat this pattern for each new feature so fork-only capabilities remain cumulative.
+
 ### Available Make Commands
 
 ```bash
