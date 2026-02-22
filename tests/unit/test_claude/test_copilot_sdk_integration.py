@@ -72,6 +72,9 @@ class TestExecuteCommand:
         assert response.content == "Hi there!"
         assert response.session_id == "sid-1"
         assert response.is_error is False
+        assert session.send_and_wait.call_args.kwargs["timeout"] == pytest.approx(
+            manager.config.claude_timeout_seconds
+        )
 
     async def test_session_id_stored_after_execution(self, manager, tmp_path):
         session = _make_session("stored-sid")
@@ -366,8 +369,14 @@ class TestHookAndEventCoverage:
         denied = await permission_cb(
             SimpleNamespace(kind="write", toolCallId="tc-2"), None
         )
+        approved_from_dict = await permission_cb(
+            {"kind": "read", "toolCallId": "tc-3"}, None
+        )
         ask_user = await ask_user_cb(
             SimpleNamespace(question="Q?", choices=["A"], allowFreeform=True)
+        )
+        ask_user_from_dict = await ask_user_cb(
+            {"question": "Q2?", "choices": ["B"], "allowFreeform": False}
         )
         retry = await error_cb(
             SimpleNamespace(
@@ -391,7 +400,9 @@ class TestHookAndEventCoverage:
 
         assert approved["kind"] == "approved"
         assert denied["kind"] == "denied-interactively-by-user"
+        assert approved_from_dict["kind"] == "approved"
         assert ask_user == {"answer": "picked-choice", "wasFreeform": True}
+        assert ask_user_from_dict == {"answer": "picked-choice", "wasFreeform": False}
         assert retry["errorHandling"] == "retry"
         assert skip["errorHandling"] == "skip"
         assert abort["errorHandling"] == "abort"

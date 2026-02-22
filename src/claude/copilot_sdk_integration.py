@@ -121,6 +121,23 @@ class CopilotSDKManager:
                 error=str(e),
             )
 
+    @staticmethod
+    def _read_field(payload: Any, *names: str, default: Any = None) -> Any:
+        """Read a field from dict-like or object payloads."""
+        if isinstance(payload, dict):
+            for name in names:
+                value = payload.get(name)
+                if value is not None:
+                    return value
+            return default
+
+        for name in names:
+            value = getattr(payload, name, None)
+            if value is not None:
+                return value
+
+        return default
+
     async def _get_client(self) -> Any:
         """Get or create the long-lived CopilotClient."""
         async with self._client_lock:
@@ -243,7 +260,7 @@ class CopilotSDKManager:
             self._session_map.get(key) if continue_session else None
         )
 
-        timeout = getattr(self.config, "claude_timeout_seconds", 300)
+        timeout = float(getattr(self.config, "claude_timeout_seconds", 300))
         configured_model = getattr(self.config, "copilot_model", "gpt-5-mini")
         effective_model = configured_model if model is None else (model.strip() or None)
 
@@ -261,8 +278,10 @@ class CopilotSDKManager:
         # Build permission_request handler — sends Approve/Deny to Telegram,
         # awaits a bool Future resolved by the user's inline button press.
         async def _on_permission_request(request: Any, _context: Any) -> Dict[str, Any]:
-            kind: str = getattr(request, "kind", "unknown")
-            tool_call_id: str = getattr(request, "toolCallId", "") or ""
+            kind: str = str(self._read_field(request, "kind", default="unknown"))
+            tool_call_id: str = str(
+                self._read_field(request, "toolCallId", "tool_call_id", default="") or ""
+            )
 
             if stream_callback and chat_id:
                 meta = await self.interaction_bridge.create_permission_request(
@@ -299,9 +318,13 @@ class CopilotSDKManager:
             return {"kind": "denied-interactively-by-user", "rules": []}
 
         async def _on_user_input_request(request: Any) -> Dict[str, Any]:
-            question: str = getattr(request, "question", "") or ""
-            choices: List[str] = list(getattr(request, "choices", None) or [])
-            allow_freeform: bool = bool(getattr(request, "allowFreeform", True))
+            question: str = str(self._read_field(request, "question", default="") or "")
+            choices: List[str] = list(
+                self._read_field(request, "choices", default=[]) or []
+            )
+            allow_freeform: bool = bool(
+                self._read_field(request, "allowFreeform", "allow_freeform", default=True)
+            )
 
             if stream_callback and chat_id:
                 meta = await self.interaction_bridge.create_ask_user(
@@ -339,9 +362,16 @@ class CopilotSDKManager:
         async def _on_error_occurred(
             hook_input: Any, _env: Any
         ) -> Optional[Dict[str, Any]]:
-            error_msg: str = getattr(hook_input, "error", "") or ""
-            error_context: str = getattr(hook_input, "errorContext", "") or ""
-            recoverable: bool = bool(getattr(hook_input, "recoverable", False))
+            error_msg: str = str(
+                self._read_field(hook_input, "error", default="") or ""
+            )
+            error_context: str = str(
+                self._read_field(hook_input, "errorContext", "error_context", default="")
+                or ""
+            )
+            recoverable: bool = bool(
+                self._read_field(hook_input, "recoverable", default=False)
+            )
 
             logger.warning(
                 "Copilot error hook triggered",
@@ -368,9 +398,11 @@ class CopilotSDKManager:
         async def _on_pre_tool_use(
             hook_input: Any, _env: Any
         ) -> Optional[Dict[str, Any]]:
-            tool_name: str = getattr(hook_input, "toolName", "") or ""
+            tool_name: str = str(
+                self._read_field(hook_input, "toolName", "tool_name", default="") or ""
+            )
             tool_args: Dict[str, Any] = dict(
-                getattr(hook_input, "toolArgs", None) or {}
+                self._read_field(hook_input, "toolArgs", "tool_args", default={}) or {}
             )
 
             logger.debug(
@@ -586,18 +618,12 @@ class CopilotSDKManager:
                     "Attaching image to Copilot message", image_path=image_path
                 )
 
-            payload_size = len(prompt)
-            if image_path:
-                payload_size += 50000
-            logger.info(
-                "Copilot payload telemetry",
-                payload_size_bucket=self._payload_bucket(payload_size),
-                has_attachments=bool(image_path),
-            )
-
+            # Send and wait
+            # Copilot SDK defaults send_and_wait timeout to 60s if omitted.
+            # Pass our configured timeout explicitly and keep a small outer guard.
             result_event = await asyncio.wait_for(
-                session.send_and_wait(message_options),
-                timeout=timeout,
+                session.send_and_wait(message_options, timeout=timeout),
+                timeout=timeout + 5,
             )
 
             final_content = ""
@@ -626,10 +652,16 @@ class CopilotSDKManager:
             )
 
         except asyncio.TimeoutError:
+            elapsed = int(asyncio.get_event_loop().time() - start_time)
             logger.error(
-                "Copilot watchdog timeout", user_id=user_id, timeout_seconds=timeout
+                "Copilot SDK timed out",
+                user_id=user_id,
+                configured_timeout=timeout,
+                elapsed_seconds=elapsed,
             )
-            raise ClaudeTimeoutError(f"Copilot SDK timed out after {timeout}s")
+            raise ClaudeTimeoutError(
+                f"Copilot SDK timed out after {elapsed}s (configured {int(timeout)}s)"
+            )
 
         except Exception as e:
             text = str(e)
