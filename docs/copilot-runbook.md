@@ -9,11 +9,18 @@ Use this when `/copilot status` reports degraded health.
    - `reason`
    - runtime `fallback_mode`
    - auth/model sections (if present)
-2. Confirm provider/model scope:
+2. Run `/copilot doctor` and capture:
+   - detected SDK distribution/version
+   - method support (`list_sessions`, `delete_session`, hooks shape)
+   - warnings (legacy package / missing SDK import)
+   - prerelease opt-in state (`COPILOT_ENABLE_PRERELEASE_FEATURES`)
+3. Confirm provider/model scope:
    - `/provider`
    - `/model`
-3. Check active sessions:
+4. Check active sessions:
    - `/copilot sessions`
+5. If session drift is detected, pin session explicitly:
+   - `/copilot switch <session_id>`
 
 ## Common Failure Domains
 

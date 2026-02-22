@@ -226,7 +226,7 @@ Enable with `ENABLE_API_SERVER=true` and `ENABLE_SCHEDULER=true`. See [docs/setu
 - Git integration with safe repository operations
 - Quick actions system with context-aware buttons
 - Session export in Markdown, HTML, and JSON formats
-- Copilot control-plane commands (`/copilot status|sessions|delete|reasoning|skills|mcp|fallback|external`)
+- Copilot control-plane commands (`/copilot status|doctor|sessions|switch|delete|reasoning|skills|mcp|fallback|external`)
 - SQLite persistence with migrations
 - Usage and cost tracking
 - Audit logging and security event tracking

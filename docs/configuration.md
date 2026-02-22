@@ -86,7 +86,8 @@ COPILOT_MODEL=gpt-5.3-codex
 COPILOT_FALLBACK_MODE=sdk_then_cli      # sdk_only|sdk_then_cli
 
 # Runtime control defaults
-COPILOT_REASONING_DEFAULT=medium         # low|medium|high
+COPILOT_REASONING_DEFAULT=medium         # low|medium|high|xhigh
+COPILOT_ENABLE_PRERELEASE_FEATURES=false # preview/alpha/beta/rc opt-in
 COPILOT_SKILL_DIRECTORIES=
 COPILOT_DISABLED_SKILLS=
 
