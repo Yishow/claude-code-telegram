@@ -174,23 +174,39 @@ class CopilotProcessManager:
             duration_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
             return_code = process.returncode
 
-            stdout = stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
-            stderr = stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            stdout = (
+                stdout_bytes.decode("utf-8", errors="replace") if stdout_bytes else ""
+            )
+            stderr = (
+                stderr_bytes.decode("utf-8", errors="replace") if stderr_bytes else ""
+            )
 
             if return_code != 0 and not stdout.strip():
                 error_msg = stderr.strip() or f"Copilot exited with code {return_code}"
-                logger.error("Copilot CLI process failed", return_code=return_code, stderr=error_msg)
+                logger.error(
+                    "Copilot CLI process failed",
+                    return_code=return_code,
+                    stderr=error_msg,
+                )
                 raise ClaudeProcessError(f"Copilot error: {error_msg}")
 
             content = stdout.strip()
             if stream_callback:
                 try:
-                    asyncio.create_task(stream_callback(CopilotStreamUpdate(type="result", content=content)))
+                    asyncio.create_task(
+                        stream_callback(
+                            CopilotStreamUpdate(type="result", content=content)
+                        )
+                    )
                 except Exception:
                     pass
 
-            new_session_id = self._find_session_id_for_directory(working_directory) or ""
-            return CopilotResponse(content=content, session_id=new_session_id, duration_ms=duration_ms)
+            new_session_id = (
+                self._find_session_id_for_directory(working_directory) or ""
+            )
+            return CopilotResponse(
+                content=content, session_id=new_session_id, duration_ms=duration_ms
+            )
 
         except asyncio.TimeoutError:
             if process_id in self.active_processes:
@@ -260,7 +276,7 @@ class CopilotProcessManager:
         wrapped_callback: Optional[Callable] = None
         if stream_callback:
 
-            async def wrapped_callback(update: CopilotStreamUpdate) -> None:
+            async def _wrapped_callback(update: CopilotStreamUpdate) -> None:
                 await stream_callback(
                     StreamUpdate(
                         type=update.type,
@@ -268,6 +284,8 @@ class CopilotProcessManager:
                         metadata=update.metadata,
                     )
                 )
+
+            wrapped_callback = _wrapped_callback
 
         fallback_mode = getattr(self.config, "copilot_fallback_mode", "sdk_then_cli")
 
@@ -299,7 +317,9 @@ class CopilotProcessManager:
             )
 
             if fallback_mode == "sdk_only":
-                raise ClaudeProcessError(f"Copilot SDK failed (sdk_only mode): {sdk_error}")
+                raise ClaudeProcessError(
+                    f"Copilot SDK failed (sdk_only mode): {sdk_error}"
+                )
 
             logger.info("Attempting Copilot CLI fallback", user_id=user_id)
             try:
@@ -340,6 +360,15 @@ class CopilotProcessManager:
     async def delete_session(self, session_id: str) -> Dict[str, Any]:
         return await self.sdk_manager.delete_session(session_id)
 
+    def switch_session(
+        self, *, user_id: int, working_directory: Path, session_id: str
+    ) -> Dict[str, Any]:
+        return self.sdk_manager.switch_session(
+            user_id=user_id,
+            working_directory=working_directory,
+            session_id=session_id,
+        )
+
     def get_runtime_controls(self) -> Dict[str, Any]:
         return self.sdk_manager.get_runtime_controls()
 
@@ -351,6 +380,7 @@ class CopilotProcessManager:
         disabled_skills: Optional[List[str]] = None,
         mcp_env_value_mode: Optional[str] = None,
         external_cli_server: Optional[str] = None,
+        external_cli_server_set: bool = False,
     ) -> Dict[str, Any]:
         return self.sdk_manager.update_runtime_controls(
             reasoning_effort=reasoning_effort,
@@ -358,7 +388,17 @@ class CopilotProcessManager:
             disabled_skills=disabled_skills,
             mcp_env_value_mode=mcp_env_value_mode,
             external_cli_server=external_cli_server,
+            external_cli_server_set=external_cli_server_set,
         )
+
+    async def get_reasoning_levels(self) -> List[str]:
+        return await self.sdk_manager.get_reasoning_levels()
+
+    async def get_capabilities(self) -> Dict[str, Any]:
+        return await self.sdk_manager.get_capabilities()
+
+    async def get_doctor_report(self) -> Dict[str, Any]:
+        return await self.sdk_manager.get_doctor_report()
 
     async def kill_all_processes(self) -> None:
         logger.info("Killing all Copilot processes", count=len(self.active_processes))
@@ -367,7 +407,9 @@ class CopilotProcessManager:
                 process.kill()
                 await process.wait()
             except Exception as e:
-                logger.warning("Failed to kill process", process_id=process_id, error=str(e))
+                logger.warning(
+                    "Failed to kill process", process_id=process_id, error=str(e)
+                )
         self.active_processes.clear()
 
     def get_active_process_count(self) -> int:

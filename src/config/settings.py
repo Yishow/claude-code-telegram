@@ -94,9 +94,16 @@ class Settings(BaseSettings):
         "global",
         description="Copilot config dir policy for auth/cache isolation",
     )
-    copilot_reasoning_default: Literal["low", "medium", "high"] = Field(
+    copilot_reasoning_default: Literal["low", "medium", "high", "xhigh"] = Field(
         "medium",
         description="Default Copilot reasoning effort",
+    )
+    copilot_enable_prerelease_features: bool = Field(
+        False,
+        description=(
+            "Enable prerelease Copilot SDK features (preview/alpha/beta/rc). "
+            "Keep disabled in production until API behavior stabilizes."
+        ),
     )
     copilot_skill_directories: Optional[List[str]] = Field(
         default=[],

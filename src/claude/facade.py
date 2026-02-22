@@ -373,6 +373,16 @@ class ClaudeIntegration:
         """Delete a Copilot session."""
         return await self.copilot_manager.delete_session(session_id)
 
+    def switch_copilot_session(
+        self, *, user_id: int, working_directory: Path, session_id: str
+    ) -> Dict[str, Any]:
+        """Switch active Copilot session binding for current user/project."""
+        return self.copilot_manager.switch_session(
+            user_id=user_id,
+            working_directory=working_directory,
+            session_id=session_id,
+        )
+
     def get_copilot_runtime_controls(self) -> Dict[str, Any]:
         """Get active Copilot runtime controls."""
         return self.copilot_manager.get_runtime_controls()
@@ -385,6 +395,7 @@ class ClaudeIntegration:
         disabled_skills: Optional[List[str]] = None,
         mcp_env_value_mode: Optional[str] = None,
         external_cli_server: Optional[str] = None,
+        external_cli_server_set: bool = False,
     ) -> Dict[str, Any]:
         """Update Copilot runtime controls."""
         return self.copilot_manager.update_runtime_controls(
@@ -393,7 +404,20 @@ class ClaudeIntegration:
             disabled_skills=disabled_skills,
             mcp_env_value_mode=mcp_env_value_mode,
             external_cli_server=external_cli_server,
+            external_cli_server_set=external_cli_server_set,
         )
+
+    async def get_copilot_reasoning_levels(self) -> List[str]:
+        """Get currently supported Copilot reasoning levels."""
+        return await self.copilot_manager.get_reasoning_levels()
+
+    async def get_copilot_capabilities(self) -> Dict[str, Any]:
+        """Get Copilot SDK capability probe."""
+        return await self.copilot_manager.get_capabilities()
+
+    async def get_copilot_doctor_report(self) -> Dict[str, Any]:
+        """Get Copilot doctor report."""
+        return await self.copilot_manager.get_doctor_report()
 
     def _get_admin_instructions(self, blocked_tools: List[str]) -> str:
         """Generate admin instructions for enabling blocked tools."""

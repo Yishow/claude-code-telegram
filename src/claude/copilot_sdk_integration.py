@@ -7,8 +7,11 @@ policy-aware runtime controls, and reliability guardrails).
 
 import asyncio
 import hashlib
+import importlib.util
 import json
+import re
 from dataclasses import dataclass, field
+from importlib import metadata as importlib_metadata
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Union
 
@@ -24,6 +27,7 @@ from .exceptions import (
 from .monitor import ToolMonitor
 
 logger = structlog.get_logger()
+_SEMVER_RE = re.compile(r"^(\d+)\.(\d+)\.(\d+)")
 
 
 @dataclass
@@ -69,13 +73,19 @@ class CopilotSDKManager:
 
         self._runtime_controls: Dict[str, Any] = {
             "reasoning_effort": getattr(config, "copilot_reasoning_default", "medium"),
-            "skill_directories": list(getattr(config, "copilot_skill_directories", []) or []),
-            "disabled_skills": list(getattr(config, "copilot_disabled_skills", []) or []),
+            "skill_directories": list(
+                getattr(config, "copilot_skill_directories", []) or []
+            ),
+            "disabled_skills": list(
+                getattr(config, "copilot_disabled_skills", []) or []
+            ),
             "mcp_env_value_mode": getattr(config, "mcp_env_value_mode", "raw"),
             "external_cli_server": getattr(config, "copilot_external_cli_server", None),
         }
 
-        raw_store = getattr(config, "copilot_session_store_path", Path("data/copilot-session-map.json"))
+        raw_store = getattr(
+            config, "copilot_session_store_path", Path("data/copilot-session-map.json")
+        )
         self._session_store_path = Path(raw_store).expanduser()
         self._load_session_map()
 
@@ -129,12 +139,22 @@ class CopilotSDKManager:
     def get_runtime_controls(self) -> Dict[str, Any]:
         """Get current runtime controls."""
         return {
-            "reasoning_effort": self._runtime_controls.get("reasoning_effort", "medium"),
-            "skill_directories": list(self._runtime_controls.get("skill_directories", []) or []),
-            "disabled_skills": list(self._runtime_controls.get("disabled_skills", []) or []),
-            "mcp_env_value_mode": self._runtime_controls.get("mcp_env_value_mode", "raw"),
+            "reasoning_effort": self._runtime_controls.get(
+                "reasoning_effort", "medium"
+            ),
+            "skill_directories": list(
+                self._runtime_controls.get("skill_directories", []) or []
+            ),
+            "disabled_skills": list(
+                self._runtime_controls.get("disabled_skills", []) or []
+            ),
+            "mcp_env_value_mode": self._runtime_controls.get(
+                "mcp_env_value_mode", "raw"
+            ),
             "external_cli_server": self._runtime_controls.get("external_cli_server"),
-            "config_dir_policy": getattr(self.config, "copilot_config_dir_policy", "global"),
+            "config_dir_policy": getattr(
+                self.config, "copilot_config_dir_policy", "global"
+            ),
         }
 
     def update_runtime_controls(
@@ -145,6 +165,7 @@ class CopilotSDKManager:
         disabled_skills: Optional[List[str]] = None,
         mcp_env_value_mode: Optional[str] = None,
         external_cli_server: Optional[str] = None,
+        external_cli_server_set: bool = False,
     ) -> Dict[str, Any]:
         """Apply runtime control updates and return the effective state."""
         if reasoning_effort is not None:
@@ -155,7 +176,7 @@ class CopilotSDKManager:
             self._runtime_controls["disabled_skills"] = list(disabled_skills)
         if mcp_env_value_mode is not None:
             self._runtime_controls["mcp_env_value_mode"] = mcp_env_value_mode
-        if external_cli_server is not None:
+        if external_cli_server_set or external_cli_server is not None:
             self._runtime_controls["external_cli_server"] = external_cli_server
 
         return self.get_runtime_controls()
@@ -187,7 +208,9 @@ class CopilotSDKManager:
         if policy != "per_project":
             return None
 
-        project_hash = hashlib.sha1(str(working_directory.resolve()).encode("utf-8")).hexdigest()[:12]
+        project_hash = hashlib.sha1(
+            str(working_directory.resolve()).encode("utf-8")
+        ).hexdigest()[:12]
         base = Path(self.config.approved_directory) / ".copilot-config"
         target = base / project_hash
         target.mkdir(parents=True, exist_ok=True)
@@ -220,7 +243,9 @@ class CopilotSDKManager:
         client = await self._get_client()
 
         key = self._session_key(user_id, working_directory)
-        copilot_session_id = session_id or (self._session_map.get(key) if continue_session else None)
+        copilot_session_id = session_id or (
+            self._session_map.get(key) if continue_session else None
+        )
 
         timeout = int(getattr(self.config, "claude_timeout_seconds", 300))
         effective_model = model or getattr(self.config, "copilot_model", "gpt-5-mini")
@@ -270,7 +295,9 @@ class CopilotSDKManager:
                     )
                 )
                 approved = bool(
-                    await self.interaction_bridge.wait_for_result(meta["interaction_id"])
+                    await self.interaction_bridge.wait_for_result(
+                        meta["interaction_id"]
+                    )
                 )
             else:
                 approved = True
@@ -307,7 +334,9 @@ class CopilotSDKManager:
                         metadata=meta,
                     )
                 )
-                answer = await self.interaction_bridge.wait_for_result(meta["interaction_id"])
+                answer = await self.interaction_bridge.wait_for_result(
+                    meta["interaction_id"]
+                )
                 if not isinstance(answer, str):
                     answer = ""
             else:
@@ -322,7 +351,9 @@ class CopilotSDKManager:
 
             return {"answer": answer, "wasFreeform": allow_freeform}
 
-        async def _on_error_occurred(hook_input: Any, _env: Any) -> Optional[Dict[str, Any]]:
+        async def _on_error_occurred(
+            hook_input: Any, _env: Any
+        ) -> Optional[Dict[str, Any]]:
             error_msg: str = getattr(hook_input, "error", "") or ""
             error_context: str = getattr(hook_input, "errorContext", "") or ""
             recoverable: bool = bool(getattr(hook_input, "recoverable", False))
@@ -349,15 +380,23 @@ class CopilotSDKManager:
                 "userNotification": f"Copilot error ({error_context}): {error_msg}",
             }
 
-        async def _on_pre_tool_use(hook_input: Any, _env: Any) -> Optional[Dict[str, Any]]:
+        async def _on_pre_tool_use(
+            hook_input: Any, _env: Any
+        ) -> Optional[Dict[str, Any]]:
             tool_name: str = getattr(hook_input, "toolName", "") or ""
-            tool_args: Dict[str, Any] = dict(getattr(hook_input, "toolArgs", None) or {})
+            tool_args: Dict[str, Any] = dict(
+                getattr(hook_input, "toolArgs", None) or {}
+            )
 
             await _emit(
                 CopilotStreamUpdate(
                     type="tool",
                     content=tool_name,
-                    metadata={"tool_name": tool_name, "tool_args": tool_args, "action": "pre"},
+                    metadata={
+                        "tool_name": tool_name,
+                        "tool_args": tool_args,
+                        "action": "pre",
+                    },
                 )
             )
 
@@ -377,7 +416,10 @@ class CopilotSDKManager:
                 CopilotStreamUpdate(
                     type="tool_denied",
                     content=tool_name,
-                    metadata={"tool_name": tool_name, "reason": error or "policy_denied"},
+                    metadata={
+                        "tool_name": tool_name,
+                        "reason": error or "policy_denied",
+                    },
                 )
             )
             logger.warning(
@@ -391,9 +433,15 @@ class CopilotSDKManager:
                 "denyReason": error or "Tool policy denied",
             }
 
-        infinite_sessions_enabled = bool(getattr(self.config, "copilot_infinite_sessions", True))
-        compaction_threshold = float(getattr(self.config, "copilot_compaction_threshold", 0.80))
-        mcp_servers = self._load_mcp_servers(runtime_controls.get("mcp_env_value_mode", "raw"))
+        infinite_sessions_enabled = bool(
+            getattr(self.config, "copilot_infinite_sessions", True)
+        )
+        compaction_threshold = float(
+            getattr(self.config, "copilot_compaction_threshold", 0.80)
+        )
+        mcp_servers = self._load_mcp_servers(
+            runtime_controls.get("mcp_env_value_mode", "raw")
+        )
 
         def _make_session_config(**extra: Any) -> "SessionConfig":
             cfg = SessionConfig(
@@ -414,7 +462,9 @@ class CopilotSDKManager:
                 cfg["infinite_sessions"] = {
                     "enabled": True,
                     "background_compaction_threshold": compaction_threshold,
-                    "buffer_exhaustion_threshold": min(compaction_threshold + 0.15, 0.99),
+                    "buffer_exhaustion_threshold": min(
+                        compaction_threshold + 0.15, 0.99
+                    ),
                 }
 
             if runtime_controls.get("reasoning_effort"):
@@ -445,7 +495,9 @@ class CopilotSDKManager:
                         copilot_session_id,
                         ResumeSessionConfig(workspace_path=str(working_directory)),
                     )
-                    logger.info("Resumed Copilot session", session_id=copilot_session_id)
+                    logger.info(
+                        "Resumed Copilot session", session_id=copilot_session_id
+                    )
                 except Exception as e:
                     logger.warning(
                         "Failed to resume session, creating new",
@@ -462,26 +514,35 @@ class CopilotSDKManager:
                 event_type = str(getattr(event, "type", ""))
                 data = getattr(event, "data", None)
 
-                if event_type == "assistant_message" or "ASSISTANT" in event_type.upper():
+                if (
+                    event_type == "assistant_message"
+                    or "ASSISTANT" in event_type.upper()
+                ):
                     content = getattr(data, "content", None) or ""
                     if content:
                         content_parts.append(content)
                         if stream_callback:
-                            cb_result = stream_callback(CopilotStreamUpdate(type="result", content=content))
+                            cb_result = stream_callback(
+                                CopilotStreamUpdate(type="result", content=content)
+                            )
                             if asyncio.iscoroutine(cb_result):
                                 asyncio.create_task(cb_result)
 
                 elif event_type == "assistant.message_delta":
                     delta = getattr(data, "delta_content", None) or ""
                     if delta and stream_callback:
-                        cb_result = stream_callback(CopilotStreamUpdate(type="result", content=delta))
+                        cb_result = stream_callback(
+                            CopilotStreamUpdate(type="result", content=delta)
+                        )
                         if asyncio.iscoroutine(cb_result):
                             asyncio.create_task(cb_result)
 
                 elif event_type == "assistant.reasoning_delta":
                     reasoning = getattr(data, "delta_content", None) or ""
                     if reasoning and stream_callback:
-                        cb_result = stream_callback(CopilotStreamUpdate(type="reasoning", content=reasoning))
+                        cb_result = stream_callback(
+                            CopilotStreamUpdate(type="reasoning", content=reasoning)
+                        )
                         if asyncio.iscoroutine(cb_result):
                             asyncio.create_task(cb_result)
 
@@ -494,7 +555,11 @@ class CopilotSDKManager:
                             CopilotStreamUpdate(
                                 type="tool",
                                 content=tool_name,
-                                metadata={"tool_name": tool_name, "tool_args": tool_args, "action": action},
+                                metadata={
+                                    "tool_name": tool_name,
+                                    "tool_args": tool_args,
+                                    "action": action,
+                                },
                             )
                         )
                         if asyncio.iscoroutine(cb_result):
@@ -565,7 +630,9 @@ class CopilotSDKManager:
             )
 
         except asyncio.TimeoutError:
-            logger.error("Copilot watchdog timeout", user_id=user_id, timeout_seconds=timeout)
+            logger.error(
+                "Copilot watchdog timeout", user_id=user_id, timeout_seconds=timeout
+            )
             raise ClaudeTimeoutError(f"Copilot SDK timed out after {timeout}s")
 
         except Exception as e:
@@ -573,7 +640,9 @@ class CopilotSDKManager:
             lowered = text.lower()
             if "auth" in lowered or "unauthorized" in lowered or "forbidden" in lowered:
                 logger.error("Copilot authentication failed", error=text)
-                raise CopilotAuthenticationError(f"Copilot authentication failed: {text}") from e
+                raise CopilotAuthenticationError(
+                    f"Copilot authentication failed: {text}"
+                ) from e
 
             logger.error("Copilot SDK execution failed", error=text)
             raise ClaudeProcessError(f"Copilot SDK error: {text}") from e
@@ -586,9 +655,15 @@ class CopilotSDKManager:
         status: Dict[str, Any] = {
             "runtime": {
                 "client_started": self._client is not None,
-                "fallback_mode": getattr(self.config, "copilot_fallback_mode", "sdk_then_cli"),
-                "external_cli_server": self._runtime_controls.get("external_cli_server"),
-                "config_dir_policy": getattr(self.config, "copilot_config_dir_policy", "global"),
+                "fallback_mode": getattr(
+                    self.config, "copilot_fallback_mode", "sdk_then_cli"
+                ),
+                "external_cli_server": self._runtime_controls.get(
+                    "external_cli_server"
+                ),
+                "config_dir_policy": getattr(
+                    self.config, "copilot_config_dir_policy", "global"
+                ),
             },
             "session": {
                 "tracked_sessions": len(self._session_map),
@@ -596,15 +671,23 @@ class CopilotSDKManager:
             },
             "model": {
                 "default_model": getattr(self.config, "copilot_model", "gpt-5-mini"),
-                "reasoning_effort": self._runtime_controls.get("reasoning_effort", "medium"),
+                "reasoning_effort": self._runtime_controls.get(
+                    "reasoning_effort", "medium"
+                ),
             },
             "skills": {
-                "skill_directories": list(self._runtime_controls.get("skill_directories", []) or []),
-                "disabled_skills": list(self._runtime_controls.get("disabled_skills", []) or []),
+                "skill_directories": list(
+                    self._runtime_controls.get("skill_directories", []) or []
+                ),
+                "disabled_skills": list(
+                    self._runtime_controls.get("disabled_skills", []) or []
+                ),
             },
             "mcp": {
                 "enabled": bool(getattr(self.config, "enable_mcp", False)),
-                "env_value_mode": self._runtime_controls.get("mcp_env_value_mode", "raw"),
+                "env_value_mode": self._runtime_controls.get(
+                    "mcp_env_value_mode", "raw"
+                ),
             },
         }
 
@@ -640,19 +723,51 @@ class CopilotSDKManager:
         return status
 
     async def list_sessions(self) -> List[Dict[str, Any]]:
-        """List known Copilot sessions."""
-        rows: List[Dict[str, Any]] = []
-        for key, sid in sorted(self._session_map.items()):
-            user_str, project = key.split(":", 1)
-            rows.append(
-                {
-                    "session_id": sid,
-                    "user_id": int(user_str),
-                    "project_path": project,
-                    "source": "local_map",
-                }
-            )
-        return rows
+        """List known Copilot sessions, preferring SDK-native session listing."""
+        rows = self._local_session_rows()
+        sdk_rows: List[Dict[str, Any]] = []
+        client: Optional[Any] = self._client
+        if client is None:
+            try:
+                client = await self._get_client()
+            except Exception as e:
+                logger.warning(
+                    "Copilot client unavailable for list_sessions", error=str(e)
+                )
+
+        if client is not None:
+            for method_name in ("list_sessions", "sessions", "get_sessions"):
+                if not hasattr(client, method_name):
+                    continue
+                method = getattr(client, method_name)
+                try:
+                    maybe = method()
+                    payload = await maybe if asyncio.iscoroutine(maybe) else maybe
+                    sdk_rows = self._normalize_sdk_sessions_payload(payload)
+                    logger.info(
+                        "Listed Copilot SDK sessions",
+                        method=method_name,
+                        count=len(sdk_rows),
+                    )
+                    break
+                except Exception as e:
+                    logger.warning(
+                        "Copilot SDK list_sessions failed",
+                        method=method_name,
+                        error=str(e),
+                    )
+
+        if not sdk_rows:
+            return rows
+
+        merged: Dict[tuple[str, str], Dict[str, Any]] = {}
+        for row in sdk_rows + rows:
+            session_id = str(row.get("session_id") or "")
+            project_path = str(row.get("project_path") or "")
+            if not session_id:
+                continue
+            merged[(session_id, project_path)] = row
+        return list(merged.values())
 
     async def delete_session(self, session_id: str) -> Dict[str, Any]:
         """Delete session from local map and SDK backend when available."""
@@ -663,8 +778,16 @@ class CopilotSDKManager:
             self._persist_session_map()
 
         sdk_deleted = False
-        client = self._client
-        if client:
+        client: Optional[Any] = self._client
+        if client is None:
+            try:
+                client = await self._get_client()
+            except Exception as e:
+                logger.warning(
+                    "Copilot client unavailable for delete_session", error=str(e)
+                )
+
+        if client is not None:
             for method_name in ("delete_session", "remove_session"):
                 if not hasattr(client, method_name):
                     continue
@@ -687,6 +810,151 @@ class CopilotSDKManager:
             "removed_local": bool(removed_keys),
             "removed_sdk": sdk_deleted,
         }
+
+    def switch_session(
+        self, *, user_id: int, working_directory: Path, session_id: str
+    ) -> Dict[str, Any]:
+        """Pin current user/project mapping to an explicit Copilot session id."""
+        key = self._session_key(user_id, working_directory)
+        previous = self._session_map.get(key)
+        self._session_map[key] = session_id
+        self._persist_session_map()
+        return {
+            "user_id": user_id,
+            "project_path": str(working_directory.resolve()),
+            "previous_session_id": previous,
+            "current_session_id": session_id,
+        }
+
+    async def get_reasoning_levels(self) -> List[str]:
+        """Detect supported reasoning levels with SDK capability inference."""
+        levels = ["low", "medium", "high"]
+        package_info = self._detect_sdk_package()
+        version = package_info.get("version")
+        prerelease_opt_in = bool(
+            getattr(self.config, "copilot_enable_prerelease_features", False)
+        )
+        version_is_preview = isinstance(version, str) and self._is_prerelease_version(
+            version
+        )
+        allow_inferred_extras = prerelease_opt_in or not version_is_preview
+
+        if (
+            allow_inferred_extras
+            and isinstance(version, str)
+            and self._version_at_least(version, (0, 1, 25))
+        ):
+            levels.append("xhigh")
+
+        if allow_inferred_extras:
+            try:
+                status = await self.get_status()
+                status_blob = json.dumps(status, ensure_ascii=False).lower()
+                if "xhigh" in status_blob and "xhigh" not in levels:
+                    levels.append("xhigh")
+            except Exception:
+                pass
+
+        return levels
+
+    async def get_capabilities(self) -> Dict[str, Any]:
+        """Return runtime capability probe for Copilot SDK surface."""
+        package_info = self._detect_sdk_package()
+        client_obj: Optional[Any] = self._client
+        session_config_annotations: Dict[str, Any] = {}
+
+        try:
+            from copilot import CopilotClient, SessionConfig  # noqa: PLC0415
+
+            if client_obj is None:
+                client_obj = CopilotClient
+            annotations = getattr(SessionConfig, "__annotations__", {})
+            if isinstance(annotations, dict):
+                session_config_annotations = annotations
+        except Exception as e:
+            return {
+                "sdk_importable": False,
+                "import_error": str(e),
+                "package": package_info,
+                "reasoning_levels": await self.get_reasoning_levels(),
+            }
+
+        method_support = {
+            "status": self._has_any_method(client_obj, "status", "get_status"),
+            "auth_status": self._has_any_method(
+                client_obj, "auth_status", "get_auth_status", "auth"
+            ),
+            "models": self._has_any_method(
+                client_obj, "models", "list_models", "get_models"
+            ),
+            "list_sessions": self._has_any_method(
+                client_obj, "list_sessions", "sessions", "get_sessions"
+            ),
+            "delete_session": self._has_any_method(
+                client_obj, "delete_session", "remove_session"
+            ),
+        }
+
+        hooks_support = {
+            "hooks_container": "hooks" in session_config_annotations,
+            "direct_callback_keys": [
+                key
+                for key in (
+                    "on_user_input_request",
+                    "on_permission_request",
+                    "on_pre_tool_use",
+                    "on_error_occurred",
+                )
+                if key in session_config_annotations
+            ],
+        }
+
+        return {
+            "sdk_importable": True,
+            "package": package_info,
+            "prerelease_opt_in_enabled": bool(
+                getattr(self.config, "copilot_enable_prerelease_features", False)
+            ),
+            "preview_distribution_detected": self._is_prerelease_version(
+                str(package_info.get("version") or "")
+            ),
+            "method_support": method_support,
+            "hooks_support": hooks_support,
+            "reasoning_levels": await self.get_reasoning_levels(),
+        }
+
+    async def get_doctor_report(self) -> Dict[str, Any]:
+        """Return an operational doctor report for Copilot provider diagnostics."""
+        status = await self.get_status()
+        capabilities = await self.get_capabilities()
+        report: Dict[str, Any] = {
+            "health": status.get("health", "unknown"),
+            "reason": status.get("reason"),
+            "runtime": status.get("runtime", {}),
+            "package": capabilities.get("package", {}),
+            "capabilities": capabilities,
+            "status_probe": status,
+            "warnings": [],
+        }
+
+        package_name = str(report["package"].get("distribution") or "")
+        package_version = str(report["package"].get("version") or "")
+        prerelease_opt_in = bool(
+            getattr(self.config, "copilot_enable_prerelease_features", False)
+        )
+        if package_name == "copilot":
+            report["warnings"].append(
+                "Detected legacy 'copilot' package distribution; expected 'github-copilot-sdk'."
+            )
+        if not capabilities.get("sdk_importable", False):
+            report["warnings"].append("Copilot SDK Python module is not importable.")
+        if self._is_prerelease_version(package_version) and not prerelease_opt_in:
+            report["warnings"].append(
+                "Preview SDK detected but prerelease opt-in is disabled "
+                "(COPILOT_ENABLE_PRERELEASE_FEATURES=false)."
+            )
+
+        return report
 
     def forget_session(self, user_id: int, working_directory: Path) -> None:
         """Remove stored session (e.g. after /new command)."""
@@ -776,12 +1044,131 @@ class CopilotSDKManager:
         except Exception as e:
             logger.warning("Failed to unsubscribe Copilot stream", error=str(e))
 
+    def _local_session_rows(self) -> List[Dict[str, Any]]:
+        rows: List[Dict[str, Any]] = []
+        for key, sid in sorted(self._session_map.items()):
+            if ":" not in key:
+                continue
+            user_str, project = key.split(":", 1)
+            rows.append(
+                {
+                    "session_id": sid,
+                    "user_id": self._safe_int(user_str),
+                    "project_path": project,
+                    "source": "local_map",
+                }
+            )
+        return rows
+
+    def _normalize_sdk_sessions_payload(self, payload: Any) -> List[Dict[str, Any]]:
+        if payload is None:
+            return []
+        if isinstance(payload, dict):
+            for key in ("sessions", "items", "data"):
+                nested = payload.get(key)
+                if isinstance(nested, list):
+                    payload = nested
+                    break
+
+        if not isinstance(payload, list):
+            return []
+
+        rows: List[Dict[str, Any]] = []
+        for item in payload:
+            row = self._session_row_from_obj(item)
+            if row:
+                rows.append(row)
+        return rows
+
+    def _session_row_from_obj(self, item: Any) -> Optional[Dict[str, Any]]:
+        if isinstance(item, dict):
+            getter = item.get
+        else:
+
+            def getter(k: str, default: Any = None) -> Any:
+                return getattr(item, k, default)
+
+        session_id = (
+            getter("session_id")
+            or getter("sessionId")
+            or getter("id")
+            or getter("session")
+        )
+        if not session_id:
+            return None
+
+        project_path = (
+            getter("project_path")
+            or getter("projectPath")
+            or getter("workspace_path")
+            or getter("workspacePath")
+            or getter("cwd")
+            or ""
+        )
+        user_id = getter("user_id") or getter("userId")
+
+        return {
+            "session_id": str(session_id),
+            "user_id": self._safe_int(user_id),
+            "project_path": str(project_path),
+            "source": "sdk",
+        }
+
+    def _detect_sdk_package(self) -> Dict[str, Any]:
+        distribution = None
+        version = None
+        for name in ("github-copilot-sdk", "copilot"):
+            try:
+                version = importlib_metadata.version(name)
+                distribution = name
+                break
+            except importlib_metadata.PackageNotFoundError:
+                continue
+
+        module_spec = importlib.util.find_spec("copilot")
+        module_path = module_spec.origin if module_spec else None
+        return {
+            "distribution": distribution,
+            "version": version,
+            "module_found": bool(module_spec),
+            "module_path": module_path,
+        }
+
+    @staticmethod
+    def _version_at_least(version: str, minimum: tuple[int, int, int]) -> bool:
+        match = _SEMVER_RE.match(version.strip())
+        if not match:
+            return False
+        parsed = tuple(int(part) for part in match.groups())
+        return parsed >= minimum
+
+    @staticmethod
+    def _is_prerelease_version(version: str) -> bool:
+        lowered = version.lower()
+        return any(tag in lowered for tag in ("preview", "alpha", "beta", "rc"))
+
+    @staticmethod
+    def _has_any_method(target: Any, *names: str) -> bool:
+        return any(hasattr(target, name) for name in names)
+
+    @staticmethod
+    def _safe_int(value: Any) -> Optional[int]:
+        try:
+            if value is None:
+                return None
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+
     def _redact_sensitive(self, payload: Any) -> Any:
         if isinstance(payload, dict):
             redacted: Dict[str, Any] = {}
             for k, v in payload.items():
                 key = str(k).lower()
-                if any(token in key for token in ("token", "secret", "password", "key", "authorization")):
+                if any(
+                    token in key
+                    for token in ("token", "secret", "password", "key", "authorization")
+                ):
                     redacted[k] = "***"
                 else:
                     redacted[k] = self._redact_sensitive(v)
