@@ -292,3 +292,23 @@ class TestEmptySessionIdWarning:
 
         # Session ID should be empty on the response
         assert not result.session_id
+
+
+def test_switch_copilot_session_delegates_to_manager(facade):
+    """switch_copilot_session delegates mapping updates to copilot_manager."""
+    facade.copilot_manager.switch_session = MagicMock(
+        return_value={"current_session_id": "sid-99"}
+    )
+
+    result = facade.switch_copilot_session(
+        user_id=123,
+        working_directory=Path("/tmp/project"),
+        session_id="sid-99",
+    )
+
+    assert result["current_session_id"] == "sid-99"
+    facade.copilot_manager.switch_session.assert_called_once_with(
+        user_id=123,
+        working_directory=Path("/tmp/project"),
+        session_id="sid-99",
+    )

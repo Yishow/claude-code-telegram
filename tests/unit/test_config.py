@@ -341,6 +341,42 @@ def test_copilot_runtime_policy_parsing(tmp_path):
         )
 
 
+def test_copilot_reasoning_default_validation(tmp_path):
+    """copilot_reasoning_default accepts xhigh and rejects unknown values."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_reasoning_default="xhigh",
+    )
+    assert settings.copilot_reasoning_default == "xhigh"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            copilot_reasoning_default="ultra",
+        )
+
+
+def test_copilot_prerelease_opt_in_flag(tmp_path):
+    """copilot prerelease flag is configurable via settings."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_enable_prerelease_features=True,
+    )
+    assert settings.copilot_enable_prerelease_features is True
+
+
 def test_project_threads_validation_requires_chat_id_in_group_mode(tmp_path):
     """Group thread mode requires project_threads_chat_id."""
     project_dir = tmp_path / "projects"
