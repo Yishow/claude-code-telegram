@@ -86,6 +86,37 @@ def test_allowed_users_parsing_with_spaces():
         assert settings.allowed_users == [123, 456, 789]
 
 
+def test_string_list_fields_parsing_from_env_style_values(tmp_path):
+    """Comma-separated strings should parse to list fields used by .env."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        claude_disallowed_tools="WebFetch, WebSearch",
+        sandbox_excluded_commands="git,npm,pip,poetry,make,docker",
+    )
+    assert settings.claude_disallowed_tools == ["WebFetch", "WebSearch"]
+    assert settings.sandbox_excluded_commands == [
+        "git",
+        "npm",
+        "pip",
+        "poetry",
+        "make",
+        "docker",
+    ]
+
+    empty_settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        claude_disallowed_tools="",
+    )
+    assert empty_settings.claude_disallowed_tools == []
+
+
 def test_security_relaxation_settings_defaults_and_overrides():
     """Security relaxation settings should default to False and be configurable."""
     with tempfile.TemporaryDirectory() as tmp_dir:

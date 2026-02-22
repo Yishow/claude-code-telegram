@@ -1,5 +1,5 @@
 .PHONY: install dev test lint format clean help run run-debug \
-        webhook-check \
+        webhook-check webhook-set webhook-info webhook-delete \
         run-remote remote-attach remote-stop \
         daemon-up daemon-install daemon-start daemon-stop daemon-restart daemon-status daemon-logs daemon-down daemon-uninstall daemon-print daemon-linger \
         menu status feature-new sync-main repair-main sync sync-branch sync-abort sync-continue stash-pop copilot-release-delta \
@@ -25,6 +25,9 @@ help:
 	@echo "  run            Run the bot"
 	@echo "  run-debug      Run with debug logging"
 	@echo "  webhook-check  Validate webhook-related env and print setup checklist"
+	@echo "  webhook-set    Register Telegram webhook from .env"
+	@echo "  webhook-info   Query Telegram webhook status"
+	@echo "  webhook-delete Remove Telegram webhook (fallback to polling)"
 	@echo "  test           Run tests"
 	@echo "  lint           Run linting checks (black / isort / flake8)"
 	@echo "  format         Auto-format code (black + isort)"
@@ -110,6 +113,15 @@ run-debug:
 
 webhook-check:
 	@bash scripts/webhook_preflight.sh
+
+webhook-set:
+	@bash scripts/telegram_webhook_manage.sh set
+
+webhook-info:
+	@bash scripts/telegram_webhook_manage.sh info
+
+webhook-delete:
+	@bash scripts/telegram_webhook_manage.sh delete
 
 # ---------------------------------------------------------------------------
 # Remote (Mac Mini)

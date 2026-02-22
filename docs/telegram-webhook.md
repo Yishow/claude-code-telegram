@@ -24,6 +24,21 @@ make webhook-check
 
 This validates required env fields and prints next actions.
 
+## 2.1 Register webhook to Telegram
+
+After `WEBHOOK_URL` is configured:
+
+```bash
+make webhook-set
+make webhook-info
+```
+
+If you need to rollback to polling:
+
+```bash
+make webhook-delete
+```
+
 ## 3. Reverse proxy
 
 The app listens on `127.0.0.1:<WEBHOOK_PORT>` and your proxy terminates TLS.

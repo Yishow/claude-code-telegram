@@ -313,6 +313,8 @@ class Settings(BaseSettings):
 
     @field_validator(
         "claude_allowed_tools",
+        "claude_disallowed_tools",
+        "sandbox_excluded_commands",
         "copilot_skill_directories",
         "copilot_disabled_skills",
         mode="before",

@@ -190,7 +190,8 @@ class ClaudeCodeBot:
             self.is_running = True
 
             if self.settings.webhook_url:
-                # Webhook mode
+                # Webhook mode in an already-running event loop:
+                # avoid Application.run_webhook() (it manages its own loop).
                 webhook_kwargs: Dict[str, Any] = {
                     "listen": "0.0.0.0",
                     "port": self.settings.webhook_port,
@@ -203,7 +204,12 @@ class ClaudeCodeBot:
                     webhook_kwargs["secret_token"] = (
                         self.settings.telegram_webhook_secret_token
                     )
-                await self.app.run_webhook(**webhook_kwargs)
+                await self.app.initialize()
+                await self.app.start()
+                await self.app.updater.start_webhook(**webhook_kwargs)
+
+                while self.is_running:
+                    await asyncio.sleep(1)
             else:
                 # Polling mode - initialize and start polling manually
                 await self.app.initialize()
