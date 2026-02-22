@@ -12,10 +12,11 @@ Ship a requested change in this fork without asking the user to repeat git workf
 ## Execution Contract
 
 - Do not develop on `main`.
+- Always create a new feature branch for each task.
 - Always use cumulative fork stack workflow.
 - Implement directly unless user explicitly asks for planning only.
 - Verify changes before commit.
-- Commit with a clear, scoped message.
+- Commit with a clear, scoped, detailed Traditional Chinese message.
 
 ## Standard Flow
 
@@ -23,6 +24,9 @@ Ship a requested change in this fork without asking the user to repeat git workf
 Ask only when ambiguity changes architecture, UX, or safety behavior.
 
 2. Create/sync feature branch with fork workflow.
+Create a new branch name based on the task scope for this turn.
+Examples: `feature/daemon-restart-stability`, `feature/copilot-timeout-hardening`.
+
 Preferred:
 ```bash
 make stack-feature BASE=feature/fork-workflow-menu NEW=feature/<feature-name>
@@ -61,7 +65,7 @@ python3 -m compileall <touched-python-files>
 7. Commit.
 ```bash
 git add <intended-files>
-git commit -m "<type>: <concise scope>"
+git commit -m "<type>: <繁中精簡主旨>" -m "<繁中詳細說明：變更內容、原因、影響與驗證>"
 ```
 Commit message style:
 - `feat:` new behavior
@@ -69,6 +73,15 @@ Commit message style:
 - `refactor:` internal-only behavior-preserving changes
 - `docs:` documentation-only
 - `test:` tests-only
+
+Commit language and detail requirements:
+- Use Traditional Chinese (繁體中文).
+- Subject should be concise and scoped.
+- Body should explain at least:
+  - what changed
+  - why it changed
+  - impact/risk
+  - verification performed
 
 8. Report completion.
 Provide:
