@@ -6,10 +6,6 @@ policy-aware runtime controls, and reliability guardrails).
 """
 
 import asyncio
-import hashlib
-import importlib.util
-import json
-import re
 from dataclasses import dataclass, field
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -247,15 +243,9 @@ class CopilotSDKManager:
             self._session_map.get(key) if continue_session else None
         )
 
-        timeout = int(getattr(self.config, "claude_timeout_seconds", 300))
-        effective_model = model or getattr(self.config, "copilot_model", "gpt-5-mini")
-        runtime_controls = self._effective_controls(
-            reasoning_effort=reasoning_effort,
-            skill_directories=skill_directories,
-            disabled_skills=disabled_skills,
-            mcp_env_value_mode=mcp_env_value_mode,
-            external_cli_server=external_cli_server,
-        )
+        timeout = getattr(self.config, "claude_timeout_seconds", 300)
+        configured_model = getattr(self.config, "copilot_model", "gpt-5-mini")
+        effective_model = configured_model if model is None else (model.strip() or None)
 
         logger.info(
             "Executing via Copilot SDK",
@@ -268,13 +258,8 @@ class CopilotSDKManager:
             reasoning_effort=runtime_controls.get("reasoning_effort"),
         )
 
-        async def _emit(update: CopilotStreamUpdate) -> None:
-            if not stream_callback:
-                return
-            result = stream_callback(update)
-            if asyncio.iscoroutine(result):
-                await result
-
+        # Build permission_request handler — sends Approve/Deny to Telegram,
+        # awaits a bool Future resolved by the user's inline button press.
         async def _on_permission_request(request: Any, _context: Any) -> Dict[str, Any]:
             kind: str = getattr(request, "kind", "unknown")
             tool_call_id: str = getattr(request, "toolCallId", "") or ""
@@ -388,6 +373,13 @@ class CopilotSDKManager:
                 getattr(hook_input, "toolArgs", None) or {}
             )
 
+            logger.debug(
+                "Copilot pre_tool_use hook",
+                tool_name=tool_name,
+                working_directory=str(working_directory),
+                user_id=user_id,
+            )
+
             await _emit(
                 CopilotStreamUpdate(
                     type="tool",
@@ -444,17 +436,18 @@ class CopilotSDKManager:
         )
 
         def _make_session_config(**extra: Any) -> "SessionConfig":
-            cfg = SessionConfig(
-                model=effective_model,
-                workspace_path=str(working_directory),
-                on_user_input_request=_on_user_input_request,
-                on_permission_request=_on_permission_request,
-                on_pre_tool_use=_on_pre_tool_use,
-                on_error_occurred=_on_error_occurred,
-                streaming=True,
+            config_kwargs: Dict[str, Any] = {
+                "workspace_path": str(working_directory),
+                "on_user_input_request": _on_user_input_request,
+                "on_permission_request": _on_permission_request,
+                "on_pre_tool_use": _on_pre_tool_use,
+                "on_error_occurred": _on_error_occurred,
+                "streaming": True,  # enables assistant.message_delta + reasoning_delta
                 **extra,
-            )
-
+            }
+            if effective_model:
+                config_kwargs["model"] = effective_model
+            cfg = SessionConfig(**config_kwargs)
             if mcp_servers:
                 cfg["mcp_servers"] = mcp_servers
 
@@ -512,12 +505,11 @@ class CopilotSDKManager:
 
             def event_handler(event: Any) -> None:
                 event_type = str(getattr(event, "type", ""))
+                normalized_event_type = event_type.lower()
                 data = getattr(event, "data", None)
 
-                if (
-                    event_type == "assistant_message"
-                    or "ASSISTANT" in event_type.upper()
-                ):
+                # Final assistant message
+                if normalized_event_type in {"assistant_message", "assistant.message"}:
                     content = getattr(data, "content", None) or ""
                     if content:
                         content_parts.append(content)
@@ -528,7 +520,8 @@ class CopilotSDKManager:
                             if asyncio.iscoroutine(cb_result):
                                 asyncio.create_task(cb_result)
 
-                elif event_type == "assistant.message_delta":
+                # Streaming text delta (requires streaming=True in SessionConfig)
+                elif normalized_event_type == "assistant.message_delta":
                     delta = getattr(data, "delta_content", None) or ""
                     if delta and stream_callback:
                         cb_result = stream_callback(
@@ -537,7 +530,8 @@ class CopilotSDKManager:
                         if asyncio.iscoroutine(cb_result):
                             asyncio.create_task(cb_result)
 
-                elif event_type == "assistant.reasoning_delta":
+                # Reasoning / thinking delta (only with reasoning-capable models)
+                elif normalized_event_type == "assistant.reasoning_delta":
                     reasoning = getattr(data, "delta_content", None) or ""
                     if reasoning and stream_callback:
                         cb_result = stream_callback(
@@ -586,9 +580,11 @@ class CopilotSDKManager:
             unsubscribe = session.on(event_handler)
 
             message_options: Dict[str, Any] = {"prompt": prompt}
-            _tmp_image_path: Optional[str] = None
             if image_path:
                 message_options["attachments"] = [{"type": "file", "path": image_path}]
+                logger.debug(
+                    "Attaching image to Copilot message", image_path=image_path
+                )
 
             payload_size = len(prompt)
             if image_path:
@@ -983,24 +979,21 @@ class CopilotSDKManager:
             url: Optional[str] = cfg.get("url")
             if url:
                 srv_type = "sse" if "sse" in url else "http"
-                servers.append({
-                    "type": srv_type,
-                    "url": url,
-                    "tools": cfg.get("tools", ["*"]),
-                })
+                servers.append(
+                    {
+                        "type": srv_type,
+                        "url": url,
+                        "tools": cfg.get("tools", ["*"]),
+                    }
+                )
             else:
-                env_values = dict(cfg.get("env", {}))
-                if env_value_mode == "omit":
-                    env_values = {}
-                elif env_value_mode == "masked":
-                    env_values = {k: "***" for k in env_values.keys()}
-
+                # Local stdio server
                 servers.append(
                     {
                         "type": "stdio",
                         "command": cfg.get("command", ""),
                         "args": cfg.get("args", []),
-                        "env": env_values,
+                        "env": cfg.get("env", {}),
                         "tools": cfg.get("tools", ["*"]),
                     }
                 )

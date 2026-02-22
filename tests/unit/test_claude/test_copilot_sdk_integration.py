@@ -1,6 +1,7 @@
 """Tests for CopilotSDKManager session lifecycle."""
 
 import asyncio
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -61,9 +62,7 @@ class TestExecuteCommand:
         session = _make_session("sid-1", "Hi there!")
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             response = await manager.execute_command(
                 prompt="hello",
                 working_directory=tmp_path,
@@ -78,9 +77,7 @@ class TestExecuteCommand:
         session = _make_session("stored-sid")
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             await manager.execute_command(
                 prompt="hello", working_directory=tmp_path, user_id=42
             )
@@ -93,9 +90,7 @@ class TestExecuteCommand:
         session.send_and_wait = AsyncMock(side_effect=asyncio.TimeoutError())
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             with pytest.raises(ClaudeTimeoutError):
                 await manager.execute_command(
                     prompt="slow",
@@ -108,15 +103,28 @@ class TestExecuteCommand:
         session.send_and_wait = AsyncMock(side_effect=RuntimeError("rpc failed"))
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             with pytest.raises(ClaudeProcessError, match="rpc failed"):
                 await manager.execute_command(
                     prompt="broken",
                     working_directory=tmp_path,
                     user_id=1,
                 )
+
+    async def test_empty_model_omits_model_override(self, manager, tmp_path):
+        session = _make_session("sid-empty-model")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="hello",
+                working_directory=tmp_path,
+                user_id=1,
+                model="",
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        assert session_config.get("model") is None
 
 
 # ── session lifecycle ─────────────────────────────────────────────────────────
@@ -127,9 +135,7 @@ class TestSessionLifecycle:
         session = _make_session("session-xyz", "remembered!")
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             # First call — creates new session
             await manager.execute_command(
                 prompt="remember X", working_directory=tmp_path, user_id=5
@@ -151,9 +157,7 @@ class TestSessionLifecycle:
         session = _make_session("old-sid")
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             # Seed a stored session
             manager._session_map[manager._session_key(7, tmp_path)] = "old-sid"
             # continue_session=False means fresh start
@@ -177,9 +181,7 @@ class TestSessionLifecycle:
 
         manager._session_map[manager._session_key(9, tmp_path)] = "expired-sid"
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             response = await manager.execute_command(
                 prompt="hello again",
                 working_directory=tmp_path,
@@ -212,9 +214,7 @@ class TestSessionLifecycle:
         client.start = AsyncMock()
         client.create_session = AsyncMock(side_effect=create_session_side_effect)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             r1 = await manager.execute_command(
                 prompt="hi", working_directory=tmp_path, user_id=1
             )
@@ -236,9 +236,7 @@ class TestClientLifecycle:
         session = _make_session()
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             await manager.execute_command(
                 prompt="a", working_directory=tmp_path, user_id=1
             )
@@ -252,15 +250,224 @@ class TestClientLifecycle:
         session = _make_session()
         client = _make_client(session)
 
-        with patch(
-            "copilot.CopilotClient", return_value=client
-        ):
+        with patch("copilot.CopilotClient", return_value=client):
             await manager.execute_command(
                 prompt="hi", working_directory=tmp_path, user_id=1
             )
             await manager.shutdown()
 
         client.stop.assert_called_once()
+        assert manager._client is None
+
+
+class TestHookAndEventCoverage:
+    async def test_event_streaming_and_image_attachment(self, manager, tmp_path):
+        updates = []
+
+        async def stream_callback(update):
+            updates.append(update)
+
+        event_data = MagicMock()
+        event_data.content = ""
+        result_event = MagicMock()
+        result_event.data = event_data
+
+        session = MagicMock()
+        session.session_id = "sid-events"
+        session.send_and_wait = AsyncMock(return_value=result_event)
+
+        def on_side_effect(handler):
+            handler(
+                SimpleNamespace(
+                    type="assistant.message_delta",
+                    data=SimpleNamespace(delta_content="delta"),
+                )
+            )
+            handler(
+                SimpleNamespace(
+                    type="assistant.reasoning_delta",
+                    data=SimpleNamespace(delta_content="reason"),
+                )
+            )
+            handler(
+                SimpleNamespace(
+                    type="tool_use",
+                    data=SimpleNamespace(tool_name="Read", tool_args={"file": "a.py"}),
+                )
+            )
+            handler(
+                SimpleNamespace(
+                    type="tool_result",
+                    data=SimpleNamespace(tool_name="Read", tool_args={"ok": True}),
+                )
+            )
+            handler(
+                SimpleNamespace(
+                    type="assistant_message",
+                    data=SimpleNamespace(content="final-from-event"),
+                )
+            )
+            return lambda: None
+
+        session.on = MagicMock(side_effect=on_side_effect)
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            response = await manager.execute_command(
+                prompt="hi",
+                working_directory=tmp_path,
+                user_id=1,
+                stream_callback=stream_callback,
+                image_path="/tmp/example.png",
+            )
+
+        await asyncio.sleep(0)
+        assert response.content == "final-from-event"
+        sent_options = session.send_and_wait.call_args[0][0]
+        assert sent_options["attachments"][0]["path"] == "/tmp/example.png"
+        assert any(u.type == "reasoning" and u.content == "reason" for u in updates)
+        assert any(
+            u.type == "tool" and (u.metadata or {}).get("action") == "post"
+            for u in updates
+        )
+
+    async def test_hook_callbacks_cover_decisions_and_timeouts(self, manager, tmp_path):
+        observed = []
+
+        async def stream_callback(update):
+            observed.append(update.type)
+            metadata = update.metadata or {}
+            if update.type == "permission_request":
+                kind = metadata.get("kind")
+                metadata["future"].set_result(kind != "write")
+            elif update.type == "ask_user":
+                metadata["future"].set_result("picked-choice")
+
+        session = _make_session("sid-hooks", "ok")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="hooks",
+                working_directory=tmp_path,
+                user_id=1,
+                stream_callback=stream_callback,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        permission_cb = session_config["on_permission_request"]
+        ask_user_cb = session_config["on_user_input_request"]
+        error_cb = session_config["on_error_occurred"]
+        pre_tool_cb = session_config["on_pre_tool_use"]
+
+        approved = await permission_cb(
+            SimpleNamespace(kind="shell", toolCallId="tc-1"), None
+        )
+        denied = await permission_cb(
+            SimpleNamespace(kind="write", toolCallId="tc-2"), None
+        )
+        ask_user = await ask_user_cb(
+            SimpleNamespace(question="Q?", choices=["A"], allowFreeform=True)
+        )
+        retry = await error_cb(
+            SimpleNamespace(
+                error="rate limit exceeded", errorContext="sdk", recoverable=False
+            ),
+            None,
+        )
+        skip = await error_cb(
+            SimpleNamespace(
+                error="transient", errorContext="tool_execution", recoverable=True
+            ),
+            None,
+        )
+        abort = await error_cb(
+            SimpleNamespace(error="fatal", errorContext="runtime", recoverable=False),
+            None,
+        )
+        pre = await pre_tool_cb(
+            SimpleNamespace(toolName="Read", toolArgs={"path": "a.txt"}), None
+        )
+
+        assert approved["kind"] == "approved"
+        assert denied["kind"] == "denied-interactively-by-user"
+        assert ask_user == {"answer": "picked-choice", "wasFreeform": True}
+        assert retry["errorHandling"] == "retry"
+        assert skip["errorHandling"] == "skip"
+        assert abort["errorHandling"] == "abort"
+        assert "Copilot error (runtime): fatal" in abort["userNotification"]
+        assert pre is None
+        assert "permission_request" in observed
+        assert "ask_user" in observed
+
+        with patch(
+            "src.claude.copilot_sdk_integration.asyncio.wait_for",
+            side_effect=asyncio.TimeoutError(),
+        ):
+            denied_on_timeout = await permission_cb(
+                SimpleNamespace(kind="shell", toolCallId="tc-timeout"), None
+            )
+        with patch(
+            "src.claude.copilot_sdk_integration.asyncio.wait_for",
+            side_effect=asyncio.TimeoutError(),
+        ):
+            empty_on_timeout = await ask_user_cb(
+                SimpleNamespace(
+                    question="timeout?", choices=["yes", "no"], allowFreeform=False
+                )
+            )
+
+        assert denied_on_timeout["kind"] == "denied-interactively-by-user"
+        assert empty_on_timeout == {"answer": "", "wasFreeform": False}
+
+
+class TestMCPAndShutdownCoverage:
+    async def test_mcp_servers_loaded_and_applied_to_session_config(
+        self, config, tmp_path
+    ):
+        mcp_json = tmp_path / "mcp.json"
+        mcp_json.write_text(
+            '{"mcpServers":{"remote":{"url":"https://example.com/sse"},"local":{"command":"python","args":["-m","srv"],"env":{"TOKEN":"x"}}}}',
+            encoding="utf-8",
+        )
+        config.enable_mcp = True
+        config.mcp_config_path = str(mcp_json)
+        manager = CopilotSDKManager(config)
+
+        session = _make_session("sid-mcp", "ok")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="mcp", working_directory=tmp_path, user_id=1
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        mcp_servers = session_config.get("mcp_servers", [])
+        assert len(mcp_servers) == 2
+        assert any(s.get("type") == "sse" for s in mcp_servers)
+        assert any(s.get("type") == "stdio" for s in mcp_servers)
+        assert session_config.get("infinite_sessions", {}).get("enabled") is True
+
+    def test_load_mcp_servers_handles_missing_and_invalid_json(self, config, tmp_path):
+        manager = CopilotSDKManager(config)
+        assert manager._load_mcp_servers() == []
+
+        config.enable_mcp = True
+        config.mcp_config_path = str(tmp_path / "missing.json")
+        assert manager._load_mcp_servers() == []
+
+        invalid_json = tmp_path / "invalid.json"
+        invalid_json.write_text("{broken", encoding="utf-8")
+        config.mcp_config_path = str(invalid_json)
+        assert manager._load_mcp_servers() == []
+
+    async def test_shutdown_handles_stop_exception(self, manager):
+        client = MagicMock()
+        client.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
+        manager._client = client
+
+        await manager.shutdown()
         assert manager._client is None
 
 

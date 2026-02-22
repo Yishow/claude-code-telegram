@@ -82,8 +82,8 @@ def deps():
     }
 
 
-def test_agentic_registers_8_commands(agentic_settings, deps):
-    """Agentic mode registers start/new/status/verbose/repo/model/provider/copilot."""
+def test_agentic_registers_6_commands(agentic_settings, deps):
+    """Agentic mode registers start/new/status/verbose/repo/model commands."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -100,15 +100,13 @@ def test_agentic_registers_8_commands(agentic_settings, deps):
     ]
     commands = [h[0][0].commands for h in cmd_handlers]
 
-    assert len(cmd_handlers) == 8
+    assert len(cmd_handlers) == 6
     assert frozenset({"start"}) in commands
     assert frozenset({"new"}) in commands
     assert frozenset({"status"}) in commands
     assert frozenset({"verbose"}) in commands
     assert frozenset({"repo"}) in commands
     assert frozenset({"model"}) in commands
-    assert frozenset({"provider"}) in commands
-    assert frozenset({"copilot"}) in commands
 
 
 def test_classic_registers_16_commands(classic_settings, deps):
@@ -153,27 +151,18 @@ def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
 
     # 3 message handlers (text, document, photo)
     assert len(msg_handlers) == 3
-    # 3 callback handlers (cd, ask_user, perm)
+    # 3 callback handlers (cd:, ask_user:, perm:)
     assert len(cb_handlers) == 3
 
 
 async def test_agentic_bot_commands(agentic_settings, deps):
-    """Agentic mode returns 8 bot commands."""
+    """Agentic mode returns 6 bot commands."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 8
+    assert len(commands) == 6
     cmd_names = [c.command for c in commands]
-    assert cmd_names == [
-        "start",
-        "new",
-        "status",
-        "verbose",
-        "repo",
-        "model",
-        "provider",
-        "copilot",
-    ]
+    assert cmd_names == ["start", "new", "status", "verbose", "repo", "model"]
 
 
 async def test_classic_bot_commands(classic_settings, deps):
@@ -307,7 +296,7 @@ async def test_agentic_text_calls_claude(agentic_settings, deps):
 
 
 async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
-    """Agentic callback handler is registered with cd: pattern filter."""
+    """Agentic callback handlers include one scoped to cd: pattern."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -323,135 +312,11 @@ async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
     ]
 
     assert len(cb_handlers) == 3
-    patterns = [h.pattern for h in cb_handlers if h.pattern is not None]
-    assert any(p.match("cd:my_project") for p in patterns)
-    assert any(p.match("ask_user:abc:0") for p in patterns)
-    assert any(p.match("perm:abc:approve") for p in patterns)
-
-
-async def test_agentic_repo_lists_from_current_directory(
-    agentic_settings, deps, tmp_dir
-):
-    """Agentic /repo should list subdirectories under current_directory."""
-    orchestrator = MessageOrchestrator(agentic_settings, deps)
-
-    current_dir = tmp_dir / "workspace"
-    current_dir.mkdir()
-    (current_dir / "proj-a").mkdir()
-    (current_dir / "proj-b").mkdir()
-
-    update = MagicMock()
-    update.message.text = "/repo"
-    update.message.reply_text = AsyncMock()
-
-    context = MagicMock()
-    context.user_data = {"current_directory": current_dir}
-    context.bot_data = {"claude_integration": None}
-
-    await orchestrator.agentic_repo(update, context)
-
-    call = update.message.reply_text.call_args
-    text = call.args[0]
-    assert "Current: <code>workspace/</code>" in text
-    assert "<code>proj-a/</code>" in text
-    assert "<code>proj-b/</code>" in text
-
-    keyboard = call.kwargs["reply_markup"].inline_keyboard
-    callback_data = [button.callback_data for row in keyboard for button in row]
-    assert "cd:proj-a" in callback_data
-    assert "cd:proj-b" in callback_data
-    assert "cd:.." in callback_data
-    assert "cd:/" in callback_data
-
-
-async def test_agentic_repo_switches_relative_to_current_directory(
-    agentic_settings, deps, tmp_dir
-):
-    """Agentic /repo <name> resolves from current_directory (not always root)."""
-    orchestrator = MessageOrchestrator(agentic_settings, deps)
-
-    parent = tmp_dir / "team"
-    target = parent / "service"
-    target.mkdir(parents=True)
-
-    claude_integration = AsyncMock()
-    claude_integration._find_resumable_session = AsyncMock(return_value=None)
-
-    update = MagicMock()
-    update.effective_user.id = 7
-    update.message.text = "/repo service"
-    update.message.reply_text = AsyncMock()
-
-    context = MagicMock()
-    context.user_data = {"current_directory": parent}
-    context.bot_data = {"claude_integration": claude_integration}
-
-    await orchestrator.agentic_repo(update, context)
-
-    assert context.user_data["current_directory"] == target.resolve()
-    call = update.message.reply_text.call_args
-    assert "Switched to <code>team/service/</code>" in call.args[0]
-
-
-async def test_agentic_repo_blocks_path_outside_approved_root(
-    agentic_settings, deps, tmp_dir
-):
-    """Agentic /repo should block traversal outside approved root."""
-    orchestrator = MessageOrchestrator(agentic_settings, deps)
-
-    current_dir = tmp_dir / "workspace"
-    current_dir.mkdir()
-
-    update = MagicMock()
-    update.message.text = "/repo ../../"
-    update.message.reply_text = AsyncMock()
-
-    context = MagicMock()
-    context.user_data = {"current_directory": current_dir}
-    context.bot_data = {"claude_integration": None}
-
-    await orchestrator.agentic_repo(update, context)
-
-    call = update.message.reply_text.call_args
-    assert "Access denied" in call.args[0]
-    assert context.user_data["current_directory"] == current_dir
-
-
-async def test_agentic_callback_cd_parent(agentic_settings, deps, tmp_dir):
-    """cd:.. callback should move to parent directory within approved root."""
-    orchestrator = MessageOrchestrator(agentic_settings, deps)
-
-    parent = tmp_dir / "team"
-    current = parent / "service"
-    current.mkdir(parents=True)
-
-    claude_integration = AsyncMock()
-    claude_integration._find_resumable_session = AsyncMock(return_value=None)
-    audit_logger = AsyncMock()
-    audit_logger.log_command = AsyncMock()
-
-    query = MagicMock()
-    query.data = "cd:.."
-    query.from_user.id = 88
-    query.answer = AsyncMock()
-    query.edit_message_text = AsyncMock()
-
-    update = MagicMock()
-    update.callback_query = query
-
-    context = MagicMock()
-    context.user_data = {"current_directory": current}
-    context.bot_data = {
-        "claude_integration": claude_integration,
-        "audit_logger": audit_logger,
-    }
-
-    await orchestrator._agentic_callback(update, context)
-
-    assert context.user_data["current_directory"] == parent.resolve()
-    call = query.edit_message_text.call_args
-    assert "Switched to <code>team/</code>" in call.args[0]
-    audit_logger.log_command.assert_called_once()
+    cd_handlers = [h for h in cb_handlers if h.pattern and h.pattern.pattern == "^cd:"]
+    assert len(cd_handlers) == 1
+    # The cd: handler pattern should match cd: prefixed data
+    assert cd_handlers[0].pattern is not None
+    assert cd_handlers[0].pattern.match("cd:my_project")
 
 
 async def test_agentic_repo_lists_from_current_directory(

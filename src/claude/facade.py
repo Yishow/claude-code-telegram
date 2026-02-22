@@ -37,9 +37,9 @@ class ClaudeIntegration:
             self.default_provider: ProviderType = default_provider
         else:
             configured_provider = getattr(config, "default_provider", "claude")
-        self.default_provider = (
-            "copilot" if configured_provider == "copilot" else "claude"
-        )
+            self.default_provider = (
+                "copilot" if configured_provider == "copilot" else "claude"
+            )
         self.sdk_manager = sdk_manager or ClaudeSDKManager(config)
         self.session_manager = session_manager
         self.tool_monitor = tool_monitor

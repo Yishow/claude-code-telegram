@@ -9,6 +9,7 @@ import yaml
 from src.claude.copilot_integration import (
     COPILOT_MODELS,
     CopilotProcessManager,
+    CopilotResponse,
     CopilotStreamUpdate,
 )
 from src.claude.exceptions import ClaudeProcessError, ClaudeTimeoutError
@@ -263,40 +264,52 @@ class TestModelList:
         assert "gpt-5-mini" in COPILOT_MODELS
 
 
-class TestExecuteFullFallbackPolicy:
-    async def test_sdk_only_mode_does_not_fallback(self, config, tmp_path):
-        config.copilot_fallback_mode = "sdk_only"
-        manager = CopilotProcessManager(config)
+class TestExecuteFullModelListRecovery:
+    async def test_retries_sdk_without_model_before_cli_fallback(
+        self, manager, tmp_path
+    ):
         manager.sdk_manager.execute_command = AsyncMock(
-            side_effect=RuntimeError("sdk down")
+            side_effect=[
+                RuntimeError("Failed to list models"),
+                CopilotResponse(content="sdk-retry", session_id="sid-1"),
+            ]
         )
-        manager.execute_command = AsyncMock()  # should never be called
+        manager.execute_command = AsyncMock()
 
-        with pytest.raises(ClaudeProcessError, match="sdk_only"):
-            await manager.execute_full(
-                prompt="hello",
-                working_directory=tmp_path,
-                user_id=1,
-            )
+        result = await manager.execute_full(
+            prompt="list dirs",
+            working_directory=tmp_path,
+            user_id=1,
+            model="gpt-5-mini",
+        )
 
+        assert result.content == "sdk-retry"
+        assert manager.sdk_manager.execute_command.await_count == 2
+        assert (
+            manager.sdk_manager.execute_command.await_args_list[1].kwargs["model"] == ""
+        )
         manager.execute_command.assert_not_called()
 
-    async def test_sdk_then_cli_mode_falls_back(self, config, tmp_path):
-        config.copilot_fallback_mode = "sdk_then_cli"
-        manager = CopilotProcessManager(config)
+    async def test_falls_back_to_cli_if_retry_without_model_also_fails(
+        self, manager, tmp_path
+    ):
         manager.sdk_manager.execute_command = AsyncMock(
-            side_effect=RuntimeError("sdk down")
+            side_effect=[
+                RuntimeError("Failed to list models"),
+                RuntimeError("still failing"),
+            ]
         )
-        from src.claude.copilot_integration import CopilotResponse
-
         manager.execute_command = AsyncMock(
-            return_value=CopilotResponse(content="cli", session_id="s1")
+            return_value=CopilotResponse(content="cli-fallback", session_id="sid-2")
         )
 
         result = await manager.execute_full(
-            prompt="hello",
+            prompt="list dirs",
             working_directory=tmp_path,
             user_id=1,
+            model="gpt-5-mini",
         )
-        assert result.content == "cli"
-        manager.execute_command.assert_called_once()
+
+        assert result.content == "cli-fallback"
+        assert manager.sdk_manager.execute_command.await_count == 2
+        manager.execute_command.assert_awaited_once()

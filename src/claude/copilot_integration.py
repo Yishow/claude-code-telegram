@@ -10,10 +10,11 @@ import structlog
 import yaml
 
 from ..config.settings import Settings
-from .copilot_interaction_bridge import CopilotInteractionBridge
-from .copilot_sdk_integration import CopilotSDKManager, CopilotStreamUpdate
-from .exceptions import ClaudeProcessError, ClaudeTimeoutError
-from .monitor import ToolMonitor
+from .copilot_sdk_integration import CopilotSDKManager
+from .exceptions import (
+    ClaudeProcessError,
+    ClaudeTimeoutError,
+)
 
 # Lazy import to avoid circular dependency; resolved at call time.
 _ClaudeResponse = None
@@ -82,12 +83,7 @@ class CopilotProcessManager:
     ):
         self.config = config
         self.active_processes: Dict[str, asyncio.subprocess.Process] = {}
-        self.interaction_bridge = interaction_bridge or CopilotInteractionBridge()
-        self.sdk_manager = CopilotSDKManager(
-            config,
-            interaction_bridge=self.interaction_bridge,
-            tool_monitor=tool_monitor,
-        )
+        self.sdk_manager = CopilotSDKManager(config)
 
     def _get_copilot_binary(self) -> str:
         if getattr(self.config, "copilot_binary_path", None):
@@ -260,7 +256,7 @@ class CopilotProcessManager:
         mcp_env_value_mode: Optional[str] = None,
         external_cli_server: Optional[str] = None,
     ) -> Any:
-        """Execute command using Copilot SDK with configurable fallback policy."""
+        """Execute command using Copilot SDK (with CLI fallback). Returns ClaudeResponse."""
         from .sdk_integration import StreamUpdate  # noqa: PLC0415
 
         ClaudeResponse = _get_claude_response_class()
@@ -287,10 +283,8 @@ class CopilotProcessManager:
 
             wrapped_callback = _wrapped_callback
 
-        fallback_mode = getattr(self.config, "copilot_fallback_mode", "sdk_then_cli")
-
-        try:
-            copilot_response = await self.sdk_manager.execute_command(
+        async def _execute_via_sdk(sdk_model: Optional[str]) -> Any:
+            return await self.sdk_manager.execute_command(
                 prompt=prompt,
                 working_directory=working_directory,
                 user_id=user_id,
@@ -299,7 +293,7 @@ class CopilotProcessManager:
                 session_id=session_id,
                 continue_session=continue_session,
                 stream_callback=wrapped_callback,
-                model=model,
+                model=sdk_model,
                 image_path=image_path,
                 reasoning_effort=reasoning_effort,
                 skill_directories=skill_directories,
@@ -307,13 +301,38 @@ class CopilotProcessManager:
                 mcp_env_value_mode=mcp_env_value_mode,
                 external_cli_server=external_cli_server,
             )
-            logger.info("Copilot execution completed via sdk", user_id=user_id)
 
+        try:
+            copilot_response = await _execute_via_sdk(model)
         except Exception as sdk_error:
+            sdk_error_text = str(sdk_error)
+            if "failed to list models" in sdk_error_text.lower():
+                logger.warning(
+                    "Copilot SDK model listing failed, retrying without model",
+                    error=sdk_error_text,
+                )
+                try:
+                    copilot_response = await _execute_via_sdk("")
+                except Exception as retry_error:
+                    logger.warning(
+                        "Copilot SDK retry without model failed",
+                        error=str(retry_error),
+                    )
+                else:
+                    return ClaudeResponse(
+                        content=copilot_response.content,
+                        session_id=copilot_response.session_id,
+                        cost=copilot_response.cost,
+                        duration_ms=copilot_response.duration_ms,
+                        num_turns=copilot_response.num_turns,
+                        is_error=copilot_response.is_error,
+                        error_type=copilot_response.error_type,
+                        tools_used=copilot_response.tools_used,
+                    )
+
             logger.warning(
-                "Copilot SDK execution failed",
-                error=str(sdk_error),
-                fallback_mode=fallback_mode,
+                "Copilot SDK failed, falling back to CLI",
+                error=sdk_error_text,
             )
 
             if fallback_mode == "sdk_only":
