@@ -8,6 +8,9 @@
 UPSTREAM_REPO := https://github.com/RichardAtCT/claude-code-telegram.git
 FORK_WORKFLOW := scripts/fork_workflow.sh
 SYSTEMD_SERVICE := scripts/systemd_user_service.sh
+UV_CACHE_DIR ?= /tmp/.uv-cache
+UV := UV_CACHE_DIR=$(UV_CACHE_DIR) uv
+UV_RUN := $(UV) run --no-sync
 
 # ---------------------------------------------------------------------------
 # Help
@@ -64,25 +67,25 @@ help:
 # Dependencies
 # ---------------------------------------------------------------------------
 install:
-	uv sync --no-dev
+	$(UV) sync --no-dev
 
 dev:
-	uv sync --extra dev
+	$(UV) sync --extra dev
 
 # ---------------------------------------------------------------------------
 # Quality
 # ---------------------------------------------------------------------------
 test:
-	uv run pytest --no-cov
+	$(UV) run pytest --no-cov
 
 lint:
-	uv run black --check src tests
-	uv run isort --check-only src tests
-	uv run flake8 src tests
+	$(UV) run black --check src tests
+	$(UV) run isort --check-only src tests
+	$(UV) run flake8 src tests
 
 format:
-	uv run black src tests
-	uv run isort src tests
+	$(UV) run black src tests
+	$(UV) run isort src tests
 
 # ---------------------------------------------------------------------------
 # Artefacts
@@ -97,17 +100,17 @@ clean:
 # Run
 # ---------------------------------------------------------------------------
 run:
-	uv run claude-telegram-bot
+	$(UV_RUN) claude-telegram-bot
 
 run-debug:
-	uv run claude-telegram-bot --debug
+	$(UV_RUN) claude-telegram-bot --debug
 
 # ---------------------------------------------------------------------------
 # Remote (Mac Mini)
 # ---------------------------------------------------------------------------
 run-remote:
 	security unlock-keychain ~/Library/Keychains/login.keychain-db
-	tmux new-session -d -s claude-bot 'uv run claude-telegram-bot'
+	tmux new-session -d -s claude-bot 'UV_CACHE_DIR=$(UV_CACHE_DIR) uv run --no-sync claude-telegram-bot'
 	@echo "Bot started in tmux session 'claude-bot'"
 	@echo "  Attach: make remote-attach"
 	@echo "  Stop:   make remote-stop"
