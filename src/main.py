@@ -330,10 +330,12 @@ async def run_application(app: Dict[str, Any]) -> None:
 
         # Collect concurrent tasks
         tasks = []
+        task_labels: Dict[asyncio.Task[Any], str] = {}
 
         # Bot task — use start() which handles its own initialization check
         bot_task = asyncio.create_task(bot.start())
         tasks.append(bot_task)
+        task_labels[bot_task] = "bot"
 
         # API server (if enabled)
         if features.api_server_enabled:
@@ -343,6 +345,7 @@ async def run_application(app: Dict[str, Any]) -> None:
                 run_api_server(event_bus, config, storage.db_manager)
             )
             tasks.append(api_task)
+            task_labels[api_task] = "api_server"
             logger.info("API server enabled", port=config.api_server_port)
 
         # Scheduler (if enabled)
@@ -358,22 +361,39 @@ async def run_application(app: Dict[str, Any]) -> None:
         # Shutdown task
         shutdown_task = asyncio.create_task(shutdown_event.wait())
         tasks.append(shutdown_task)
+        task_labels[shutdown_task] = "shutdown_signal"
 
         # Wait for any task to complete or shutdown signal
         done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
 
-        # Check completed tasks for exceptions
+        # Check completed tasks for errors and unexpected exits
+        task_error: Optional[BaseException] = None
         for task in done:
             if task.cancelled():
                 continue
+
+            task_name = task_labels.get(task, task.get_name())
+            if task is shutdown_task:
+                continue
+
             exc = task.exception()
             if exc is not None:
                 logger.error(
                     "Task failed",
-                    task=task.get_name(),
+                    task=task_name,
                     error=str(exc),
                     error_type=type(exc).__name__,
                 )
+                if task_error is None:
+                    task_error = exc
+                continue
+
+            logger.error(
+                "Task exited unexpectedly",
+                task=task_name,
+            )
+            if task_error is None:
+                task_error = RuntimeError(f"{task_name} task exited unexpectedly")
 
         # Cancel remaining tasks
         for task in pending:
@@ -382,6 +402,9 @@ async def run_application(app: Dict[str, Any]) -> None:
                 await task
             except asyncio.CancelledError:
                 pass
+
+        if task_error is not None:
+            raise task_error
 
     except Exception as e:
         logger.error("Application error", error=str(e))

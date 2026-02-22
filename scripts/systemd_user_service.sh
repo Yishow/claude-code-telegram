@@ -7,6 +7,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SYSTEMD_USER_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 UNIT_PATH="${SYSTEMD_USER_DIR}/${SERVICE_FILE}"
+PORT_KILLER_SCRIPT="${PROJECT_DIR}/scripts/kill_port_listener.sh"
 
 info() {
   printf '[INFO] %s\n' "$1"
@@ -35,6 +36,59 @@ detect_uv_bin() {
   printf '%s' "$uv_bin"
 }
 
+load_env_value() {
+  local key="$1"
+  local env_file="${PROJECT_DIR}/.env"
+
+  if [ -f "$env_file" ]; then
+    # Parse simple KEY=VALUE entries (supports optional whitespace).
+    sed -n -E "s/^[[:space:]]*${key}[[:space:]]*=[[:space:]]*(.*)[[:space:]]*$/\1/p" "$env_file" \
+      | tail -n 1 \
+      | sed -E "s/^['\"]//; s/['\"]$//"
+  fi
+}
+
+load_bool_value() {
+  local key="$1"
+  local default_value="$2"
+  local raw_value
+
+  raw_value="${!key:-}"
+  if [ -z "$raw_value" ]; then
+    raw_value="$(load_env_value "$key" || true)"
+  fi
+  if [ -z "$raw_value" ]; then
+    raw_value="$default_value"
+  fi
+
+  case "${raw_value,,}" in
+    1|true|yes|on) printf 'true' ;;
+    0|false|no|off) printf 'false' ;;
+    *) printf '%s' "$default_value" ;;
+  esac
+}
+
+detect_webhook_url() {
+  local webhook_url
+  webhook_url="${WEBHOOK_URL:-}"
+  if [ -z "$webhook_url" ]; then
+    webhook_url="$(load_env_value WEBHOOK_URL || true)"
+  fi
+  printf '%s' "$webhook_url"
+}
+
+detect_webhook_port() {
+  local webhook_port
+  webhook_port="${WEBHOOK_PORT:-}"
+  if [ -z "$webhook_port" ]; then
+    webhook_port="$(load_env_value WEBHOOK_PORT || true)"
+  fi
+  if [ -z "$webhook_port" ]; then
+    webhook_port="8443"
+  fi
+  printf '%s' "$webhook_port"
+}
+
 check_user_systemd() {
   if ! systemctl --user show-environment >/dev/null 2>&1; then
     die "systemd user session is unavailable. If needed: loginctl enable-linger $USER"
@@ -42,21 +96,30 @@ check_user_systemd() {
 }
 
 build_unit_content() {
-  local uv_bin path_env uv_cache_dir
+  local uv_bin path_env webhook_url webhook_port force_kill_port pre_start
   uv_bin="$(detect_uv_bin)"
   path_env="$(dirname "$uv_bin"):/usr/local/bin:/usr/bin:/bin:$HOME/.local/bin"
-  uv_cache_dir="${UV_CACHE_DIR:-/tmp/.uv-cache}"
+  webhook_url="$(detect_webhook_url)"
+  webhook_port="$(detect_webhook_port)"
+  force_kill_port="$(load_bool_value FORCE_KILL_WEBHOOK_PORT true)"
+  pre_start=""
+  if [ -n "$webhook_url" ] && [ "$force_kill_port" = "true" ]; then
+    pre_start="ExecStartPre=${PORT_KILLER_SCRIPT} ${webhook_port}"
+  fi
 
   cat <<EOF
 [Unit]
 Description=Claude Code Telegram Bot
 After=network.target
+StartLimitIntervalSec=300
+StartLimitBurst=3
 
 [Service]
 Type=simple
 WorkingDirectory=${PROJECT_DIR}
-ExecStart=${uv_bin} run --no-sync claude-telegram-bot
-Restart=always
+${pre_start}
+ExecStart=${uv_bin} run claude-telegram-bot
+Restart=on-failure
 RestartSec=10
 StandardOutput=journal
 StandardError=journal
@@ -84,8 +147,13 @@ enable_unit() {
   info "Enabled ${SERVICE_FILE}"
 }
 
-start_unit() {
+reset_failed_unit() {
   check_user_systemd
+  systemctl --user reset-failed "$SERVICE_FILE" >/dev/null 2>&1 || true
+}
+
+start_unit() {
+  reset_failed_unit
   systemctl --user start "$SERVICE_FILE"
   info "Started ${SERVICE_FILE}"
 }
@@ -97,7 +165,7 @@ stop_unit() {
 }
 
 restart_unit() {
-  check_user_systemd
+  reset_failed_unit
   systemctl --user restart "$SERVICE_FILE"
   info "Restarted ${SERVICE_FILE}"
 }

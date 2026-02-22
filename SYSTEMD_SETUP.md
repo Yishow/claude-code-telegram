@@ -24,6 +24,14 @@ uv run claude-telegram-bot
 
 from your current project directory.
 
+If `WEBHOOK_URL` is configured, daemon startup will force-kill any existing
+listener on `WEBHOOK_PORT` before starting the bot.
+You can disable this behavior with:
+
+```bash
+FORCE_KILL_WEBHOOK_PORT=false
+```
+
 ## Common Commands
 
 ```bash
@@ -70,3 +78,32 @@ Check logs:
 make daemon-logs
 ```
 Verify `.env` exists and production settings are correct.
+
+4. `Address already in use`
+This usually means webhook mode is enabled (`WEBHOOK_URL` is set) and
+`WEBHOOK_PORT` is already occupied.
+
+Options:
+```bash
+# Option A: switch bot back to polling mode
+# (remove WEBHOOK_URL from .env, then reinstall/restart daemon)
+
+make daemon-install
+make daemon-restart
+```
+
+```bash
+# Option B: keep webhook mode but change WEBHOOK_PORT to a free port,
+# then reinstall/restart daemon
+
+make daemon-install
+make daemon-restart
+```
+
+5. `Start request repeated too quickly`
+The unit hit systemd start limits after repeated failures.
+
+```bash
+systemctl --user reset-failed claude-telegram-bot.service
+make daemon-restart
+```
