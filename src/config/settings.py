@@ -315,19 +315,36 @@ class Settings(BaseSettings):
         "claude_allowed_tools",
         "claude_disallowed_tools",
         "sandbox_excluded_commands",
-        "copilot_skill_directories",
-        "copilot_disabled_skills",
         mode="before",
     )
     @classmethod
-    def parse_claude_allowed_tools(cls, v: Any) -> Optional[List[str]]:
-        """Parse comma-separated string lists."""
+    def parse_string_list_values(cls, v: Any) -> Optional[List[str]]:
+        """Parse list-like configuration from JSON array or comma-separated text."""
         if v is None:
             return None
-        if isinstance(v, str):
-            return [tool.strip() for tool in v.split(",") if tool.strip()]
+
         if isinstance(v, list):
-            return [str(tool) for tool in v]
+            return [str(item).strip() for item in v if str(item).strip()]
+
+        if isinstance(v, str):
+            value = v.strip()
+            if not value:
+                return []
+            if value.lower() in {"none", "null"}:
+                return None
+            if value.startswith("[") and value.endswith("]"):
+                try:
+                    parsed = json.loads(value)
+                    if isinstance(parsed, list):
+                        return [
+                            str(item).strip()
+                            for item in parsed
+                            if str(item).strip()
+                        ]
+                except json.JSONDecodeError:
+                    pass
+            return [item.strip() for item in value.split(",") if item.strip()]
+
         return v  # type: ignore[no-any-return]
 
     @field_validator("copilot_external_cli_server", mode="before")
