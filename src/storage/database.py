@@ -329,8 +329,10 @@ class DatabaseManager:
                     conflict_status TEXT DEFAULT 'none',
                     is_active BOOLEAN DEFAULT TRUE,
                     eviction_reason TEXT,
-                    FOREIGN KEY (source_message_id) REFERENCES messages(message_id),
-                    FOREIGN KEY (conflict_with_id) REFERENCES memory_items(memory_id)
+                    FOREIGN KEY (source_message_id)
+                        REFERENCES messages(message_id) ON DELETE SET NULL,
+                    FOREIGN KEY (conflict_with_id)
+                        REFERENCES memory_items(memory_id) ON DELETE SET NULL
                 );
 
                 CREATE TABLE IF NOT EXISTS memory_runtime_settings (
@@ -384,6 +386,89 @@ class DatabaseManager:
                     ON memory_events(user_id, chat_id, message_thread_id, timestamp);
                 CREATE INDEX IF NOT EXISTS idx_memory_events_type
                     ON memory_events(event_type, timestamp);
+                """,
+            ),
+            (
+                6,
+                """
+                -- Add ON DELETE behavior to memory_items foreign keys
+                PRAGMA foreign_keys = OFF;
+
+                CREATE TABLE IF NOT EXISTS memory_items_v2 (
+                    memory_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id INTEGER NOT NULL,
+                    chat_id INTEGER NOT NULL DEFAULT 0,
+                    message_thread_id INTEGER NOT NULL DEFAULT 0,
+                    project_path TEXT NOT NULL,
+                    memory_type TEXT NOT NULL,
+                    content TEXT NOT NULL,
+                    priority INTEGER DEFAULT 0,
+                    source_session_id TEXT,
+                    source_message_id INTEGER,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    ttl_expires_at TIMESTAMP,
+                    conflict_with_id INTEGER,
+                    conflict_status TEXT DEFAULT 'none',
+                    is_active BOOLEAN DEFAULT TRUE,
+                    eviction_reason TEXT,
+                    FOREIGN KEY (source_message_id)
+                        REFERENCES messages(message_id) ON DELETE SET NULL,
+                    FOREIGN KEY (conflict_with_id)
+                        REFERENCES memory_items_v2(memory_id) ON DELETE SET NULL
+                );
+
+                INSERT INTO memory_items_v2 (
+                    memory_id,
+                    user_id,
+                    chat_id,
+                    message_thread_id,
+                    project_path,
+                    memory_type,
+                    content,
+                    priority,
+                    source_session_id,
+                    source_message_id,
+                    timestamp,
+                    ttl_expires_at,
+                    conflict_with_id,
+                    conflict_status,
+                    is_active,
+                    eviction_reason
+                )
+                SELECT
+                    memory_id,
+                    user_id,
+                    chat_id,
+                    message_thread_id,
+                    project_path,
+                    memory_type,
+                    content,
+                    priority,
+                    source_session_id,
+                    source_message_id,
+                    timestamp,
+                    ttl_expires_at,
+                    conflict_with_id,
+                    conflict_status,
+                    is_active,
+                    eviction_reason
+                FROM memory_items;
+
+                DROP TABLE memory_items;
+                ALTER TABLE memory_items_v2 RENAME TO memory_items;
+
+                CREATE INDEX IF NOT EXISTS idx_memory_items_scope
+                    ON memory_items(
+                        user_id,
+                        chat_id,
+                        message_thread_id,
+                        project_path,
+                        is_active
+                    );
+                CREATE INDEX IF NOT EXISTS idx_memory_items_ttl
+                    ON memory_items(ttl_expires_at);
+
+                PRAGMA foreign_keys = ON;
                 """,
             ),
         ]

@@ -578,19 +578,49 @@ class MemoryRepository:
             rows = await cursor.fetchall()
             return [MemoryItemModel.from_row(row) for row in rows]
 
-    async def mark_expired_items(self, now: datetime) -> int:
-        """Evict expired memory items and mark reason."""
+    async def mark_expired_items(
+        self,
+        now: datetime,
+        user_id: Optional[int] = None,
+        chat_id: Optional[int] = None,
+        message_thread_id: Optional[int] = None,
+        project_path: Optional[str] = None,
+    ) -> int:
+        """Evict expired memory items and mark reason.
+
+        Optional scope filters can reduce write contention during request-time cleanup.
+        """
+        scope_clauses: List[str] = []
+        scope_params: List[Any] = []
+        if user_id is not None:
+            scope_clauses.append("user_id = ?")
+            scope_params.append(user_id)
+        if chat_id is not None:
+            scope_clauses.append("chat_id = ?")
+            scope_params.append(chat_id)
+        if message_thread_id is not None:
+            scope_clauses.append("message_thread_id = ?")
+            scope_params.append(message_thread_id)
+        if project_path is not None:
+            scope_clauses.append("project_path = ?")
+            scope_params.append(project_path)
+
+        scope_sql = ""
+        if scope_clauses:
+            scope_sql = " AND " + " AND ".join(scope_clauses)
+
         async with self.db.get_connection() as conn:
             cursor = await conn.execute(
-                """
+                f"""
                 UPDATE memory_items
                 SET is_active = FALSE,
                     eviction_reason = COALESCE(eviction_reason, 'ttl_expired')
                 WHERE is_active = TRUE
                   AND ttl_expires_at IS NOT NULL
                   AND ttl_expires_at <= ?
+                  {scope_sql}
             """,
-                (now,),
+                (now, *scope_params),
             )
             await conn.commit()
             return cursor.rowcount

@@ -279,7 +279,13 @@ class MemoryService:
                 )
 
             now = datetime.now(UTC)
-            evicted = await self.storage.memory.mark_expired_items(now)
+            evicted = await self.storage.memory.mark_expired_items(
+                now,
+                user_id=user_id,
+                chat_id=chat_id,
+                message_thread_id=runtime.message_thread_id,
+                project_path=str(project_path.resolve()),
+            )
             candidates = await self.storage.memory.get_recall_candidates(
                 user_id=user_id,
                 chat_id=chat_id,
@@ -477,7 +483,13 @@ class MemoryService:
                 runtime.memory_ai_enhancement_enabled
                 and runtime.memory_ai_periodic_review_enabled
             ):
-                reviewed = await self.storage.memory.mark_expired_items(now)
+                reviewed = await self.storage.memory.mark_expired_items(
+                    now,
+                    user_id=user_id,
+                    chat_id=chat_id,
+                    message_thread_id=thread_id,
+                    project_path=project_scope,
+                )
                 if reviewed:
                     await self._log_event(
                         user_id=user_id,
