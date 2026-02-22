@@ -14,7 +14,10 @@ Ship a requested change in this fork without asking the user to repeat git workf
 - Do not develop on `main`.
 - Always create a new feature branch for each task.
 - Always use cumulative fork stack workflow.
+- Sync with upstream before editing (`make sync` preferred).
 - Implement directly unless user explicitly asks for planning only.
+- Keep blast radius minimal: touch only files required by the task.
+- Prefer additive changes over broad rewrites when both satisfy requirements.
 - Verify changes before commit.
 - Commit with a clear, scoped, detailed Traditional Chinese message.
 
@@ -29,7 +32,12 @@ Examples: `feature/daemon-restart-stability`, `feature/copilot-timeout-hardening
 
 Preferred:
 ```bash
+make sync
 make stack-feature BASE=feature/fork-workflow-menu NEW=feature/<feature-name>
+```
+Fallback when stack commands are unavailable in the current repo:
+```bash
+make feature-new NAME=<feature-name>
 ```
 If branch already exists:
 ```bash
@@ -41,6 +49,8 @@ git checkout feature/<feature-name>
 - Reuse existing patterns in this repository.
 - Keep security and boundary checks intact.
 - Avoid unrelated refactors.
+- Keep backward compatibility unless the task explicitly requires breaking change.
+- If change scope grows, split into small sequential commits (infra/docs/tests/logic).
 
 4. Update tests and docs required by the change.
 - Add or adjust unit/integration tests for behavior changes.
@@ -61,6 +71,7 @@ python3 -m compileall <touched-python-files>
 - Confirm only intended files changed.
 - Remove temporary/debug edits.
 - Ensure messages and command help text match final behavior.
+- Verify no accidental format-only churn across unrelated files.
 
 7. Commit.
 ```bash
@@ -95,3 +106,16 @@ Provide:
 - Never use destructive git resets unless user explicitly asks.
 - Never push with plain `--force`; use `--force-with-lease` after rebase.
 - Never bypass approved directory boundaries or security guardrails.
+
+## Minimal-Breakage Checklist (For New Features)
+
+- Start from latest upstream state before coding (`make sync`).
+- Use one feature branch per task, named by task scope.
+- Keep interfaces stable first; add compatibility shims when needed.
+- Add/adjust targeted tests before broad refactors.
+- Run targeted verification early and often, not only at the end.
+- If rebase conflicts happen:
+  - Resolve conflicts with smallest safe edits.
+  - Continue with `make sync-continue`.
+  - Abort with `make sync-abort` if conflict risk is high, then re-plan.
+- If `main` is polluted with private commits, recover with `make repair-main`.
