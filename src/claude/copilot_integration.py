@@ -10,11 +10,13 @@ import structlog
 import yaml
 
 from ..config.settings import Settings
-from .copilot_sdk_integration import CopilotSDKManager
+from .copilot_interaction_bridge import CopilotInteractionBridge
+from .copilot_sdk_integration import CopilotSDKManager, CopilotStreamUpdate
 from .exceptions import (
     ClaudeProcessError,
     ClaudeTimeoutError,
 )
+from .monitor import ToolMonitor
 
 # Lazy import to avoid circular dependency; resolved at call time.
 _ClaudeResponse = None
@@ -260,13 +262,14 @@ class CopilotProcessManager:
         from .sdk_integration import StreamUpdate  # noqa: PLC0415
 
         ClaudeResponse = _get_claude_response_class()
+        fallback_mode = getattr(self.config, "copilot_fallback_mode", "sdk_then_cli")
 
         logger.info(
             "Executing with Copilot SDK",
             working_directory=str(working_directory),
             session_id=session_id,
             continue_session=continue_session,
-            fallback_mode=getattr(self.config, "copilot_fallback_mode", "sdk_then_cli"),
+            fallback_mode=fallback_mode,
         )
 
         wrapped_callback: Optional[Callable] = None

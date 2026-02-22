@@ -135,6 +135,11 @@ class CopilotInteractionBridge:
                 message_thread_id=record.message_thread_id,
             )
             return default
+        finally:
+            async with self._lock:
+                current = self._records.get(interaction_id)
+                if current:
+                    self._cleanup_record(current)
 
     async def resolve(
         self,
@@ -156,7 +161,6 @@ class CopilotInteractionBridge:
                 self._cleanup_record(record)
                 return False
             record.future.set_result(value)
-            self._cleanup_record(record)
             return True
 
     async def resolve_pending_freeform(
@@ -183,7 +187,6 @@ class CopilotInteractionBridge:
             record = max(candidates, key=lambda r: r.created_at)
             record.future.set_result(value)
             interaction_id = record.interaction_id
-            self._cleanup_record(record)
             return interaction_id
 
     async def get(self, interaction_id: str) -> Optional[Dict[str, Any]]:
@@ -191,6 +194,9 @@ class CopilotInteractionBridge:
         async with self._lock:
             record = self._records.get(interaction_id)
             if not record:
+                return None
+            if record.future.done():
+                self._cleanup_record(record)
                 return None
             data = dict(record.metadata)
             data.update(
@@ -209,6 +215,9 @@ class CopilotInteractionBridge:
     async def pending_count(self) -> int:
         """Return number of pending interactions."""
         async with self._lock:
+            for record in list(self._records.values()):
+                if record.future.done():
+                    self._cleanup_record(record)
             return len(self._records)
 
     def _new_record(
@@ -257,7 +266,6 @@ class CopilotInteractionBridge:
                     return
                 default = "" if record.kind == "ask_user" else False
                 record.future.set_result(default)
-                self._cleanup_record(record)
             logger.warning(
                 "Copilot interaction auto-expired",
                 interaction_id=interaction_id,

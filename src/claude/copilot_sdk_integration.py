@@ -6,6 +6,9 @@ policy-aware runtime controls, and reliability guardrails).
 """
 
 import asyncio
+import hashlib
+import json
+import re
 from dataclasses import dataclass, field
 from importlib import metadata as importlib_metadata
 from pathlib import Path
@@ -263,6 +266,13 @@ class CopilotSDKManager:
         timeout = float(getattr(self.config, "claude_timeout_seconds", 300))
         configured_model = getattr(self.config, "copilot_model", "gpt-5-mini")
         effective_model = configured_model if model is None else (model.strip() or None)
+        runtime_controls = self._effective_controls(
+            reasoning_effort=reasoning_effort,
+            skill_directories=skill_directories,
+            disabled_skills=disabled_skills,
+            mcp_env_value_mode=mcp_env_value_mode,
+            external_cli_server=external_cli_server,
+        )
 
         logger.info(
             "Executing via Copilot SDK",
@@ -274,6 +284,13 @@ class CopilotSDKManager:
             model=effective_model,
             reasoning_effort=runtime_controls.get("reasoning_effort"),
         )
+
+        async def _emit(update: CopilotStreamUpdate) -> None:
+            if not stream_callback:
+                return
+            callback_result = stream_callback(update)
+            if asyncio.iscoroutine(callback_result):
+                await callback_result
 
         # Build permission_request handler — sends Approve/Deny to Telegram,
         # awaits a bool Future resolved by the user's inline button press.
@@ -303,6 +320,27 @@ class CopilotSDKManager:
                         meta["interaction_id"]
                     )
                 )
+            elif stream_callback:
+                future: "asyncio.Future[bool]" = (
+                    asyncio.get_event_loop().create_future()
+                )
+                await _emit(
+                    CopilotStreamUpdate(
+                        type="permission_request",
+                        content=kind,
+                        metadata={
+                            "kind": kind,
+                            "tool_call_id": tool_call_id,
+                            "future": future,
+                        },
+                    )
+                )
+                try:
+                    approved = bool(
+                        await asyncio.wait_for(asyncio.shield(future), timeout=120)
+                    )
+                except asyncio.TimeoutError:
+                    approved = False
             else:
                 approved = True
 
@@ -347,6 +385,28 @@ class CopilotSDKManager:
                 )
                 if not isinstance(answer, str):
                     answer = ""
+            elif stream_callback:
+                future: "asyncio.Future[str]" = asyncio.get_event_loop().create_future()
+                await _emit(
+                    CopilotStreamUpdate(
+                        type="ask_user",
+                        content=question,
+                        metadata={
+                            "question": question,
+                            "choices": choices,
+                            "allow_freeform": allow_freeform,
+                            "future": future,
+                        },
+                    )
+                )
+                try:
+                    raw_answer = await asyncio.wait_for(
+                        asyncio.shield(future),
+                        timeout=self.interaction_bridge.ask_user_timeout_seconds,
+                    )
+                except asyncio.TimeoutError:
+                    raw_answer = ""
+                answer = raw_answer if isinstance(raw_answer, str) else ""
             else:
                 answer = ""
 
@@ -621,10 +681,14 @@ class CopilotSDKManager:
             # Send and wait
             # Copilot SDK defaults send_and_wait timeout to 60s if omitted.
             # Pass our configured timeout explicitly and keep a small outer guard.
-            result_event = await asyncio.wait_for(
-                session.send_and_wait(message_options, timeout=timeout),
-                timeout=timeout + 5,
-            )
+            try:
+                send_wait = session.send_and_wait(message_options, timeout=timeout)
+            except TypeError as e:
+                if "unexpected keyword argument 'timeout'" in str(e):
+                    send_wait = session.send_and_wait(message_options)
+                else:
+                    raise
+            result_event = await asyncio.wait_for(send_wait, timeout=timeout + 5)
 
             final_content = ""
             if result_event:
@@ -991,7 +1055,7 @@ class CopilotSDKManager:
             self._session_map.pop(key, None)
             self._persist_session_map()
 
-    def _load_mcp_servers(self, env_value_mode: str) -> List[Dict[str, Any]]:
+    def _load_mcp_servers(self, env_value_mode: str = "raw") -> List[Dict[str, Any]]:
         """Convert Claude-format MCP config to Copilot SDK MCPServerConfig list."""
         enable_mcp: bool = bool(getattr(self.config, "enable_mcp", False))
         mcp_config_path = getattr(self.config, "mcp_config_path", None)

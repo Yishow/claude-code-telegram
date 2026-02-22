@@ -391,8 +391,6 @@ class MessageOrchestrator:
             ("verbose", self.agentic_verbose),
             ("repo", self.agentic_repo),
             ("model", self.agentic_model),
-            ("provider", self.agentic_provider),
-            ("copilot", self.agentic_copilot),
         ]
         if self.settings.enable_project_threads:
             handlers.append(("sync_threads", command.sync_threads))
@@ -510,8 +508,6 @@ class MessageOrchestrator:
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("repo", "List repos / switch workspace"),
                 BotCommand("model", "Switch AI model (Copilot provider)"),
-                BotCommand("provider", "Switch provider (claude/copilot)"),
-                BotCommand("copilot", "Copilot status/control commands"),
             ]
             if self.settings.enable_project_threads:
                 commands.append(BotCommand("sync_threads", "Sync project topics"))

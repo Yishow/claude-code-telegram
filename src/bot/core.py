@@ -194,14 +194,19 @@ class ClaudeCodeBot:
                 # the event loop itself and breaks when called inside our async runtime.
                 await self.app.initialize()
                 await self.app.start()
-                await self.app.updater.start_webhook(
-                    listen="0.0.0.0",
-                    port=self.settings.webhook_port,
-                    url_path=self.settings.webhook_path,
-                    webhook_url=self.settings.webhook_url,
-                    drop_pending_updates=True,
-                    allowed_updates=Update.ALL_TYPES,
-                )
+                webhook_kwargs = {
+                    "listen": "0.0.0.0",
+                    "port": self.settings.webhook_port,
+                    "url_path": self.settings.webhook_path,
+                    "webhook_url": self.settings.webhook_url,
+                    "drop_pending_updates": True,
+                    "allowed_updates": Update.ALL_TYPES,
+                }
+                if self.settings.telegram_webhook_secret_token:
+                    webhook_kwargs["secret_token"] = (
+                        self.settings.telegram_webhook_secret_token
+                    )
+                await self.app.updater.start_webhook(**webhook_kwargs)
 
                 # Keep the task alive so the application does not exit immediately.
                 while self.is_running:
