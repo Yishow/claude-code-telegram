@@ -43,6 +43,7 @@ class ClaudeSession:
     total_cost: float = 0.0
     total_turns: int = 0
     message_count: int = 0
+    display_name: Optional[str] = None
     tools_used: List[str] = field(default_factory=list)
     is_new_session: bool = False  # True if session hasn't been sent to Claude Code yet
 
@@ -76,6 +77,7 @@ class ClaudeSession:
             "total_cost": self.total_cost,
             "total_turns": self.total_turns,
             "message_count": self.message_count,
+            "display_name": self.display_name,
             "tools_used": self.tools_used,
         }
 
@@ -91,6 +93,7 @@ class ClaudeSession:
             total_cost=data.get("total_cost", 0.0),
             total_turns=data.get("total_turns", 0),
             message_count=data.get("message_count", 0),
+            display_name=data.get("display_name"),
             tools_used=data.get("tools_used", []),
         )
 
@@ -350,11 +353,47 @@ class SessionManager:
                 "cost": session.total_cost,
                 "turns": session.total_turns,
                 "messages": session.message_count,
+                "display_name": session.display_name,
                 "tools_used": session.tools_used,
                 "expired": session.is_expired(self.config.session_timeout_hours),
             }
 
         return None
+
+    async def set_session_display_name(
+        self,
+        session_id: str,
+        user_id: int,
+        display_name: Optional[str],
+    ) -> Optional[ClaudeSession]:
+        """Set or clear session display name for a user-owned session."""
+        session = self.active_sessions.get(session_id)
+
+        if session and session.user_id != user_id:
+            logger.warning(
+                "Session ownership mismatch in set_session_display_name",
+                session_id=session_id,
+                session_owner=session.user_id,
+                requesting_user=user_id,
+            )
+            return None
+
+        if not session:
+            session = await self.storage.load_session(session_id, user_id)
+            if not session:
+                return None
+            self.active_sessions[session.session_id] = session
+
+        session.display_name = display_name
+        await self.storage.save_session(session)
+
+        logger.info(
+            "Session display name updated",
+            session_id=session.session_id,
+            user_id=user_id,
+            display_name=display_name,
+        )
+        return session
 
     async def get_user_session_summary(self, user_id: int) -> Dict:
         """Get summary of user's sessions."""

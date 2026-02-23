@@ -471,6 +471,13 @@ class DatabaseManager:
                 PRAGMA foreign_keys = ON;
                 """,
             ),
+            (
+                7,
+                """
+                -- Session display name for user-friendly naming
+                ALTER TABLE sessions ADD COLUMN display_name TEXT;
+                """,
+            ),
         ]
 
     async def _init_pool(self):

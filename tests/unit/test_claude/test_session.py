@@ -86,6 +86,7 @@ class TestClaudeSession:
             total_cost=0.05,
             total_turns=2,
             message_count=1,
+            display_name="Named Session",
             tools_used=["Read", "Write"],
         )
 
@@ -99,6 +100,7 @@ class TestClaudeSession:
         assert restored.total_cost == original.total_cost
         assert restored.total_turns == original.total_turns
         assert restored.message_count == original.message_count
+        assert restored.display_name == original.display_name
         assert restored.tools_used == original.tools_used
 
     def test_from_dict_normalizes_legacy_naive_timestamps(self):
@@ -366,6 +368,30 @@ class TestSessionManager:
         assert session.session_id != "stored-other-session"
         assert session.user_id == 123
         assert session.is_new_session is True
+
+    async def test_set_session_display_name(self, session_manager):
+        """Setting display name should persist and be queryable."""
+        existing = ClaudeSession(
+            session_id="named-session",
+            user_id=123,
+            project_path=Path("/test/project"),
+            created_at=datetime.now(UTC),
+            last_used=datetime.now(UTC),
+        )
+        await session_manager.storage.save_session(existing)
+
+        updated = await session_manager.set_session_display_name(
+            session_id="named-session",
+            user_id=123,
+            display_name="My Named Session",
+        )
+
+        assert updated is not None
+        assert updated.display_name == "My Named Session"
+
+        info = await session_manager.get_session_info("named-session", user_id=123)
+        assert info is not None
+        assert info["display_name"] == "My Named Session"
 
 
 class TestUpdateSessionNewWithoutId:

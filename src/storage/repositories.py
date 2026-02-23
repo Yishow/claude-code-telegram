@@ -140,8 +140,8 @@ class SessionRepository:
             await conn.execute(
                 """
                 INSERT INTO sessions
-                (session_id, user_id, project_path, created_at, last_used)
-                VALUES (?, ?, ?, ?, ?)
+                (session_id, user_id, project_path, created_at, last_used, display_name)
+                VALUES (?, ?, ?, ?, ?, ?)
             """,
                 (
                     session.session_id,
@@ -149,6 +149,7 @@ class SessionRepository:
                     session.project_path,
                     session.created_at,
                     session.last_used,
+                    session.display_name,
                 ),
             )
             await conn.commit()
@@ -167,7 +168,7 @@ class SessionRepository:
                 """
                 UPDATE sessions
                 SET last_used = ?, total_cost = ?, total_turns = ?,
-                    message_count = ?, is_active = ?
+                    message_count = ?, display_name = ?, is_active = ?
                 WHERE session_id = ?
             """,
                 (
@@ -175,6 +176,7 @@ class SessionRepository:
                     session.total_cost,
                     session.total_turns,
                     session.message_count,
+                    session.display_name,
                     session.is_active,
                     session.session_id,
                 ),

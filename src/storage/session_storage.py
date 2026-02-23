@@ -73,6 +73,7 @@ class SQLiteSessionStorage(SessionStorage):
             total_cost=session.total_cost,
             total_turns=session.total_turns,
             message_count=session.message_count,
+            display_name=session.display_name,
         )
 
         async with self.db_manager.get_connection() as conn:
@@ -80,7 +81,8 @@ class SQLiteSessionStorage(SessionStorage):
             cursor = await conn.execute(
                 """
                 UPDATE sessions
-                SET last_used = ?, total_cost = ?, total_turns = ?, message_count = ?
+                SET last_used = ?, total_cost = ?, total_turns = ?, message_count = ?,
+                    display_name = ?
                 WHERE session_id = ?
             """,
                 (
@@ -88,6 +90,7 @@ class SQLiteSessionStorage(SessionStorage):
                     session_model.total_cost,
                     session_model.total_turns,
                     session_model.message_count,
+                    session_model.display_name,
                     session_model.session_id,
                 ),
             )
@@ -98,8 +101,8 @@ class SQLiteSessionStorage(SessionStorage):
                     """
                     INSERT INTO sessions
                     (session_id, user_id, project_path, created_at, last_used,
-                     total_cost, total_turns, message_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                     total_cost, total_turns, message_count, display_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         session_model.session_id,
@@ -110,6 +113,7 @@ class SQLiteSessionStorage(SessionStorage):
                         session_model.total_cost,
                         session_model.total_turns,
                         session_model.message_count,
+                        session_model.display_name,
                     ),
                 )
 
@@ -147,6 +151,7 @@ class SQLiteSessionStorage(SessionStorage):
                 total_cost=session_model.total_cost,
                 total_turns=session_model.total_turns,
                 message_count=session_model.message_count,
+                display_name=session_model.display_name,
                 tools_used=[],  # Tools are tracked separately in tool_usage table
             )
 
@@ -194,6 +199,7 @@ class SQLiteSessionStorage(SessionStorage):
                     total_cost=session_model.total_cost,
                     total_turns=session_model.total_turns,
                     message_count=session_model.message_count,
+                    display_name=session_model.display_name,
                     tools_used=[],  # Tools are tracked separately
                 )
                 sessions.append(claude_session)
@@ -220,6 +226,7 @@ class SQLiteSessionStorage(SessionStorage):
                     total_cost=session_model.total_cost,
                     total_turns=session_model.total_turns,
                     message_count=session_model.message_count,
+                    display_name=session_model.display_name,
                     tools_used=[],  # Tools are tracked separately
                 )
                 sessions.append(claude_session)

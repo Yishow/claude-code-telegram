@@ -328,6 +328,7 @@ class ClaudeIntegration:
         return [
             {
                 "session_id": s.session_id,
+                "display_name": s.display_name,
                 "project_path": str(s.project_path),
                 "created_at": s.created_at.isoformat(),
                 "last_used": s.last_used.isoformat(),
@@ -338,6 +339,28 @@ class ClaudeIntegration:
             }
             for s in sessions
         ]
+
+    async def set_session_display_name(
+        self,
+        session_id: str,
+        user_id: int,
+        display_name: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """Set or clear display name of a user-owned session."""
+        session = await self.session_manager.set_session_display_name(
+            session_id=session_id,
+            user_id=user_id,
+            display_name=display_name,
+        )
+        if not session:
+            return None
+
+        return {
+            "session_id": session.session_id,
+            "display_name": session.display_name,
+            "project_path": str(session.project_path),
+            "last_used": session.last_used.isoformat(),
+        }
 
     async def cleanup_expired_sessions(self) -> int:
         """Clean up expired sessions."""

@@ -89,6 +89,7 @@ class SessionModel:
     total_cost: float = 0.0
     total_turns: int = 0
     message_count: int = 0
+    display_name: Optional[str] = None
     is_active: bool = True
 
     def to_dict(self) -> Dict[str, Any]:

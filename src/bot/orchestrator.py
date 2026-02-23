@@ -388,6 +388,7 @@ class MessageOrchestrator:
             ("start", self.agentic_start),
             ("new", self.agentic_new),
             ("status", self.agentic_status),
+            ("session_name", command.session_name_command),
             ("verbose", self.agentic_verbose),
             ("memory", self.agentic_memory),
             ("repo", self.agentic_repo),
@@ -471,6 +472,7 @@ class MessageOrchestrator:
             ("pwd", command.print_working_directory),
             ("projects", command.show_projects),
             ("status", command.session_status),
+            ("session_name", command.session_name_command),
             ("memory", command.memory_command),
             ("provider", command.provider_command),
             ("model", command.model_command),
@@ -506,7 +508,7 @@ class MessageOrchestrator:
             CallbackQueryHandler(self._inject_deps(callback.handle_callback_query))
         )
 
-        logger.info("Classic handlers registered (16 commands + full handler set)")
+        logger.info("Classic handlers registered (18 commands + full handler set)")
 
     async def get_bot_commands(self) -> list:  # type: ignore[type-arg]
         """Return bot commands appropriate for current mode."""
@@ -515,6 +517,7 @@ class MessageOrchestrator:
                 BotCommand("start", "Start the bot"),
                 BotCommand("new", "Start a fresh session"),
                 BotCommand("status", "Show session status"),
+                BotCommand("session_name", "Name/reset current session"),
                 BotCommand("verbose", "Set output verbosity (0/1/2)"),
                 BotCommand("memory", "Memory system controls"),
                 BotCommand("repo", "List repos / switch workspace"),
@@ -537,6 +540,7 @@ class MessageOrchestrator:
                 BotCommand("pwd", "Show current directory"),
                 BotCommand("projects", "Show all projects"),
                 BotCommand("status", "Show session status"),
+                BotCommand("session_name", "Name/reset current session"),
                 BotCommand("memory", "Memory system controls"),
                 BotCommand("provider", "Switch provider (claude/copilot)"),
                 BotCommand("model", "Switch Copilot model"),
@@ -600,7 +604,7 @@ class MessageOrchestrator:
             f"Hi {safe_name}! I'm your AI coding assistant.\n"
             f"Just tell me what you need — I can read, write, and run code.\n\n"
             f"Working in: {dir_display}\n"
-            f"Commands: /new (reset) · /status · /memory · /provider · /copilot"
+            f"Commands: /new (reset) · /status · /session_name · /memory · /provider · /copilot"
             f"{sync_line}",
             parse_mode="HTML",
         )

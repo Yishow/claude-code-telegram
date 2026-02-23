@@ -30,6 +30,9 @@ from ..utils.html_format import escape_html
 
 logger = structlog.get_logger()
 
+SESSION_NAME_MAX_LENGTH = 100
+SESSION_NAME_RESET_KEYWORDS = {"未命名", "none", "clear", "reset", "-"}
+
 
 def _is_within_root(path: Path, root: Path) -> bool:
     """Check whether path is within root directory."""
@@ -131,6 +134,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         f"• <code>/cd &lt;dir&gt;</code> - Change directory\n"
         f"• <code>/projects</code> - Show available projects\n"
         f"• <code>/status</code> - Show session status\n"
+        f"• <code>/session_name</code> - Name or reset current session\n"
         f"• <code>/memory</code> - Memory system controls\n"
         f"• <code>/actions</code> - Show quick actions\n"
         f"• <code>/git</code> - Git repository commands\n\n"
@@ -183,6 +187,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "• <code>/continue [message]</code> - Explicitly continue last session\n"
         "• <code>/end</code> - End current session and clear context\n"
         "• <code>/status</code> - Show session and usage status\n"
+        "• <code>/session_name &lt;name&gt;</code> - Name current session\n"
         "• <code>/memory</code> - Memory system controls\n"
         "• <code>/export</code> - Export session history\n"
         "• <code>/actions</code> - Show context-aware quick actions\n"
@@ -883,6 +888,7 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     current_dir = context.user_data.get(
         "current_directory", settings.approved_directory
     )
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
     relative_path = current_dir.relative_to(settings.approved_directory)
     snapshot = get_runtime_snapshot(settings, context.user_data)
 
@@ -903,15 +909,19 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     # Check if there's a resumable session from the database
     resumable_info = ""
+    session_display_name: Optional[str] = None
+    if claude_session_id and claude_integration:
+        session_info = await claude_integration.get_session_info(claude_session_id, user_id)
+        if session_info:
+            session_display_name = session_info.get("display_name")
+
     if not claude_session_id:
-        claude_integration: ClaudeIntegration = context.bot_data.get(
-            "claude_integration"
-        )
         if claude_integration:
             existing = await claude_integration._find_resumable_session(
                 user_id, current_dir
             )
             if existing:
+                session_display_name = existing.display_name
                 resumable_info = (
                     f"🔄 Resumable: <code>{existing.session_id[:8]}...</code> "
                     f"({existing.message_count} msgs)"
@@ -933,8 +943,20 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     if claude_session_id:
         status_lines.append(f"🆔 Session ID: <code>{claude_session_id[:8]}...</code>")
+        if session_display_name:
+            status_lines.append(
+                f"🏷️ Session Name: <code>{escape_html(session_display_name)}</code>"
+            )
+        else:
+            status_lines.append("🏷️ Session Name: <i>未命名</i>")
     elif resumable_info:
         status_lines.append(resumable_info)
+        if session_display_name:
+            status_lines.append(
+                f"🏷️ Session Name: <code>{escape_html(session_display_name)}</code>"
+            )
+        else:
+            status_lines.append("🏷️ Session Name: <i>未命名</i>")
         status_lines.append("💡 Session will auto-resume on your next message")
 
     # Add action buttons
@@ -970,6 +992,117 @@ async def session_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(
         "\n".join(status_lines), parse_mode="HTML", reply_markup=reply_markup
     )
+
+
+async def session_name_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle /session_name command."""
+    user_id = update.effective_user.id
+    settings: Settings = context.bot_data["settings"]
+    claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
+
+    if not claude_integration:
+        await update.message.reply_text(
+            "❌ <b>Claude integration is unavailable.</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    current_dir = context.user_data.get(
+        "current_directory", settings.approved_directory
+    )
+    session_id = context.user_data.get("claude_session_id")
+    session_display_name: Optional[str] = None
+
+    if session_id:
+        session_info = await claude_integration.get_session_info(session_id, user_id)
+        if session_info:
+            session_display_name = session_info.get("display_name")
+        else:
+            session_id = None
+
+    if not session_id:
+        resumable = await claude_integration._find_resumable_session(user_id, current_dir)
+        if resumable:
+            session_id = resumable.session_id
+            session_display_name = resumable.display_name
+
+    args = context.args or []
+    if not args:
+        if not session_id:
+            await update.message.reply_text(
+                "ℹ️ <b>No session found in current directory.</b>\n\n"
+                "Send a message or use <code>/new</code> first, then set a name with:\n"
+                "<code>/session_name &lt;name&gt;</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        current_name_line = (
+            f"<code>{escape_html(session_display_name)}</code>"
+            if session_display_name
+            else "<i>未命名</i>"
+        )
+        await update.message.reply_text(
+            "🏷️ <b>Session Name</b>\n\n"
+            f"Current: {current_name_line}\n\n"
+            "Set name: <code>/session_name &lt;name&gt;</code>\n"
+            "Reset to unnamed: <code>/session_name 未命名</code>\n"
+            f"Max length: <b>{SESSION_NAME_MAX_LENGTH}</b> chars",
+            parse_mode="HTML",
+        )
+        return
+
+    if not session_id:
+        await update.message.reply_text(
+            "❌ <b>No resumable session in current directory.</b>\n\n"
+            "Send a message first, then retry <code>/session_name</code>.",
+            parse_mode="HTML",
+        )
+        return
+
+    requested_name = " ".join(args).strip()
+    if not requested_name:
+        await update.message.reply_text(
+            "❌ <b>Session name cannot be empty.</b>",
+            parse_mode="HTML",
+        )
+        return
+
+    should_reset = requested_name.casefold() in {
+        keyword.casefold() for keyword in SESSION_NAME_RESET_KEYWORDS
+    }
+    if not should_reset and len(requested_name) > SESSION_NAME_MAX_LENGTH:
+        await update.message.reply_text(
+            "❌ <b>Name too long.</b>\n\n"
+            f"Please use at most <b>{SESSION_NAME_MAX_LENGTH}</b> characters.",
+            parse_mode="HTML",
+        )
+        return
+
+    updated = await claude_integration.set_session_display_name(
+        session_id=session_id,
+        user_id=user_id,
+        display_name=None if should_reset else requested_name,
+    )
+    if not updated:
+        await update.message.reply_text(
+            "❌ <b>Unable to update session name.</b>\n\n"
+            "Session may no longer be available.",
+            parse_mode="HTML",
+        )
+        return
+
+    if should_reset:
+        await update.message.reply_text(
+            "✅ Session name reset to <i>未命名</i>.",
+            parse_mode="HTML",
+        )
+    else:
+        await update.message.reply_text(
+            "✅ Session name updated:\n"
+            f"<code>{escape_html(requested_name)}</code>",
+            parse_mode="HTML",
+        )
 
 
 async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
