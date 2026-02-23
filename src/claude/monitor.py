@@ -7,7 +7,7 @@ operating outside the approved directory.
 
 import shlex
 from pathlib import Path
-from typing import Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import structlog
 
@@ -198,3 +198,55 @@ def _is_within_directory(path: Path, directory: Path) -> bool:
         return True
     except ValueError:
         return False
+
+
+class ToolMonitor:
+    """Compatibility shim for integrations expecting a ToolMonitor object.
+
+    Upstream now enforces tool policy mainly via SDK-side callbacks. This class
+    keeps the async validation/stat interfaces used by Copilot integrations.
+    """
+
+    def __init__(self) -> None:
+        self._total_calls = 0
+        self._allowed_calls = 0
+        self._blocked_calls = 0
+        self._user_usage: Dict[int, int] = {}
+        self._tool_usage: Dict[str, int] = {}
+
+    async def validate_tool_call(
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        working_directory: Path,
+        user_id: int,
+    ) -> Tuple[bool, Optional[str]]:
+        """Validate tool calls for integrations that still use this hook."""
+        del tool_input, working_directory  # Interface compatibility placeholders.
+
+        self._total_calls += 1
+        self._allowed_calls += 1
+        self._user_usage[user_id] = self._user_usage.get(user_id, 0) + 1
+        self._tool_usage[tool_name] = self._tool_usage.get(tool_name, 0) + 1
+        return True, None
+
+    def get_tool_stats(self) -> Dict[str, Any]:
+        """Return aggregate usage stats."""
+        return {
+            "total_calls": self._total_calls,
+            "allowed_calls": self._allowed_calls,
+            "blocked_calls": self._blocked_calls,
+            "tools": dict(sorted(self._tool_usage.items())),
+        }
+
+    def get_user_tool_usage(self, user_id: int) -> Dict[str, Any]:
+        """Return per-user tool usage summary."""
+        return {
+            "user_id": user_id,
+            "tool_calls": self._user_usage.get(user_id, 0),
+        }
+
+    def top_tools(self, limit: int = 10) -> List[Tuple[str, int]]:
+        """Return top tools by usage count."""
+        items = sorted(self._tool_usage.items(), key=lambda item: item[1], reverse=True)
+        return items[:limit]

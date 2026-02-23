@@ -31,3 +31,17 @@ class ClaudeMCPError(ClaudeError):
     def __init__(self, message: str, server_name: str = None):
         super().__init__(message)
         self.server_name = server_name
+
+
+class ClaudeToolValidationError(ClaudeError):
+    """Raised when a requested tool is blocked by policy/validation."""
+
+    def __init__(
+        self,
+        message: str,
+        blocked_tools: list[str] | None = None,
+        allowed_tools: list[str] | None = None,
+    ):
+        super().__init__(message)
+        self.blocked_tools = blocked_tools or []
+        self.allowed_tools = allowed_tools or []

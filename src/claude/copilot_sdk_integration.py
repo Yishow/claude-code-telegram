@@ -1107,12 +1107,18 @@ class CopilotSDKManager:
                 )
             else:
                 # Local stdio server
+                env_map = dict(cfg.get("env", {}) or {})
+                if env_value_mode == "omit":
+                    env_map = {}
+                elif env_value_mode == "masked":
+                    env_map = {k: "***" for k in env_map}
+
                 servers.append(
                     {
                         "type": "stdio",
                         "command": cfg.get("command", ""),
                         "args": cfg.get("args", []),
-                        "env": cfg.get("env", {}),
+                        "env": env_map,
                         "tools": cfg.get("tools", ["*"]),
                     }
                 )

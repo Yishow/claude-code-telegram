@@ -1146,10 +1146,15 @@ async def memory_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def copilot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle /copilot control-plane command."""
+    message = update.effective_message
+    if message is None:
+        logger.warning("Missing effective message for /copilot command")
+        return
+
     settings: Settings = context.bot_data["settings"]
     claude_integration: ClaudeIntegration = context.bot_data.get("claude_integration")
     if not claude_integration:
-        await update.message.reply_text("Claude integration not available.")
+        await message.reply_text("Claude integration not available.")
         return
 
     text, parse_mode = await run_copilot_control_command(
@@ -1163,9 +1168,9 @@ async def copilot_command(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         ),
     )
     if parse_mode:
-        await update.message.reply_text(text, parse_mode=parse_mode)
+        await message.reply_text(text, parse_mode=parse_mode)
     else:
-        await update.message.reply_text(text)
+        await message.reply_text(text)
 
 
 async def export_session(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:

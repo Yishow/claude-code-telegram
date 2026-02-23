@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+import src.bot.orchestrator as orchestrator_module
 from src.bot.orchestrator import MessageOrchestrator, _redact_secrets
 from src.config import create_test_config
 from src.memory import MemoryPreHookResult
@@ -275,6 +276,29 @@ async def test_agentic_status_compact(agentic_settings, deps):
     call_args = update.message.reply_text.call_args
     text = call_args.args[0]
     assert "Session: none" in text
+
+
+async def test_agentic_copilot_uses_effective_message(agentic_settings, deps, monkeypatch):
+    """/copilot replies through effective_message when update.message is missing."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    run_mock = AsyncMock(return_value=("ok", "HTML"))
+    monkeypatch.setattr(orchestrator_module, "run_copilot_control_command", run_mock)
+
+    update = MagicMock()
+    update.message = None
+    update.effective_user.id = 123
+    update.effective_message.reply_text = AsyncMock()
+
+    context = MagicMock()
+    context.args = ["status"]
+    context.user_data = {}
+    context.bot_data = {"claude_integration": MagicMock()}
+
+    await orchestrator.agentic_copilot(update, context)
+
+    update.effective_message.reply_text.assert_called_once_with("ok", parse_mode="HTML")
+    run_mock.assert_awaited_once()
 
 
 async def test_agentic_text_calls_claude(agentic_settings, deps):

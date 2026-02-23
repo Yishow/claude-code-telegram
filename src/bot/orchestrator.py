@@ -780,9 +780,14 @@ class MessageOrchestrator:
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
         """Copilot control-plane command."""
+        message = update.effective_message
+        if message is None:
+            logger.warning("Missing effective message for /copilot command")
+            return
+
         claude_integration = self._get_claude_integration(context)
         if not claude_integration:
-            await update.message.reply_text("Claude integration not available.")
+            await message.reply_text("Claude integration not available.")
             return
 
         text, parse_mode = await run_copilot_control_command(
@@ -799,9 +804,9 @@ class MessageOrchestrator:
             ),
         )
         if parse_mode:
-            await update.message.reply_text(text, parse_mode=parse_mode)
+            await message.reply_text(text, parse_mode=parse_mode)
         else:
-            await update.message.reply_text(text)
+            await message.reply_text(text)
 
     def _format_verbose_progress(
         self,

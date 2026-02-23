@@ -8,6 +8,7 @@ from typing import Any, List, MutableMapping, Optional, Tuple
 
 from ..claude.facade import ClaudeIntegration
 from ..config.settings import Settings
+from ..utils.constants import SAFE_MESSAGE_LENGTH
 from .copilot_runtime import (
     ONCE_REASONING_KEY,
     SESSION_DISABLED_SKILLS_KEY,
@@ -18,6 +19,9 @@ from .copilot_runtime import (
     get_runtime_snapshot,
 )
 from .utils.html_format import escape_html
+
+_PREVIEW_CHAR_LIMIT = 300
+_PRE_BLOCK_CHAR_LIMIT = 3000
 
 
 def _as_string_list(value: Any) -> List[str]:
@@ -34,8 +38,48 @@ def _is_once_arg(value: str) -> bool:
     return value.strip().lower() in {"once", "--once", "-o"}
 
 
-def _json_pre(payload: Any) -> str:
-    return escape_html(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+def _truncate_text(text: str, *, limit: int) -> str:
+    if len(text) <= limit:
+        return text
+    omitted = len(text) - limit
+    clipped = text[:limit].rstrip()
+    return f"{clipped}\n... [truncated {omitted} chars]"
+
+
+def _compact_value(value: Any, *, limit: int = _PREVIEW_CHAR_LIMIT) -> str:
+    raw = str(value or "")
+    if len(raw) <= limit:
+        return raw
+    omitted = len(raw) - limit
+    return f"{raw[:limit].rstrip()}... (+{omitted} chars)"
+
+
+def _preview_list(items: List[str], *, max_items: int = 12, max_chars: int = 1200) -> str:
+    if not items:
+        return "-"
+    normalized = [str(x).strip() for x in items if str(x).strip()]
+    if not normalized:
+        return "-"
+
+    shown = normalized[:max_items]
+    preview = ", ".join(shown)
+    preview = _truncate_text(preview, limit=max_chars).replace("\n", " ")
+
+    hidden = len(normalized) - len(shown)
+    if hidden > 0:
+        preview = f"{preview} (+{hidden} more)"
+    return preview
+
+
+def _json_pre(payload: Any, *, limit: int = _PRE_BLOCK_CHAR_LIMIT) -> str:
+    text = json.dumps(payload, ensure_ascii=False, indent=2, default=str)
+    return escape_html(_truncate_text(text, limit=limit))
+
+
+def _require_new_session_for_runtime_controls(user_data: MutableMapping[str, Any]) -> None:
+    """Runtime controls are bound at session creation; force a fresh session next turn."""
+    user_data["claude_session_id"] = None
+    user_data["force_new_session"] = True
 
 
 async def run_copilot_control_command(
@@ -76,14 +120,14 @@ async def run_copilot_control_command(
             f"Fallback: <code>{escape_html(snapshot['fallback_mode'])}</code>\n"
             f"Reasoning: <code>{escape_html(str(snapshot['reasoning_effort']))}</code>\n"
             f"MCP env mode: <code>{escape_html(str(snapshot['mcp_env_value_mode']))}</code>\n\n"
-            f"<pre>{_json_pre(status)}</pre>",
+            f"<pre>{_json_pre(status, limit=2600)}</pre>",
             "HTML",
         )
 
     if sub == "doctor":
         doctor = await claude_integration.get_copilot_doctor_report()
         return (
-            "<b>Copilot Doctor</b>\n\n" f"<pre>{_json_pre(doctor)}</pre>",
+            "<b>Copilot Doctor</b>\n\n" f"<pre>{_json_pre(doctor, limit=3200)}</pre>",
             "HTML",
         )
 
@@ -92,14 +136,32 @@ async def run_copilot_control_command(
         if not sessions:
             return "No known Copilot sessions.", None
 
-        lines = [
-            f"• <code>{escape_html(str(s.get('session_id', '')))}</code> "
-            f"(user={s.get('user_id')}, "
-            f"project=<code>{escape_html(str(s.get('project_path', '')))}</code>, "
-            f"source=<code>{escape_html(str(s.get('source', '-')))}</code>)"
-            for s in sessions[:80]
-        ]
-        return ("<b>Copilot Sessions</b>\n\n" + "\n".join(lines), "HTML")
+        header = "<b>Copilot Sessions</b>\n\n"
+        lines: List[str] = []
+        rendered = header
+        for session in sessions:
+            session_id = _compact_value(session.get("session_id", ""))
+            user_value = _compact_value(session.get("user_id", "-"), limit=80)
+            project_path = _compact_value(session.get("project_path", ""))
+            source = _compact_value(session.get("source", "-"), limit=120)
+            line = (
+                f"• <code>{escape_html(session_id)}</code> "
+                f"(user={escape_html(user_value)}, "
+                f"project=<code>{escape_html(project_path)}</code>, "
+                f"source=<code>{escape_html(source)}</code>)"
+            )
+            candidate = f"{rendered}\n{line}" if lines else f"{rendered}{line}"
+            if len(candidate) > SAFE_MESSAGE_LENGTH:
+                break
+            lines.append(line)
+            rendered = candidate
+
+        hidden = len(sessions) - len(lines)
+        if hidden > 0:
+            tail = f"\n... and {hidden} more session(s)."
+            if len(rendered) + len(tail) <= SAFE_MESSAGE_LENGTH:
+                rendered += tail
+        return (rendered, "HTML")
 
     if sub == "switch":
         if len(args) < 2:
@@ -129,7 +191,7 @@ async def run_copilot_control_command(
         if len(args) < 2:
             return "Usage: /copilot delete <session_id>", None
         result = await claude_integration.delete_copilot_session(args[1].strip())
-        return (f"Delete result: <pre>{_json_pre(result)}</pre>", "HTML")
+        return (f"Delete result: <pre>{_json_pre(result, limit=1800)}</pre>", "HTML")
 
     if sub == "reasoning":
         levels = await claude_integration.get_copilot_reasoning_levels()
@@ -160,6 +222,7 @@ async def run_copilot_control_command(
             user_data[ONCE_REASONING_KEY] = value
         else:
             user_data[SESSION_REASONING_KEY] = value
+            _require_new_session_for_runtime_controls(user_data)
 
         claude_integration.update_copilot_runtime_controls(reasoning_effort=value)
         return (
@@ -173,6 +236,8 @@ async def run_copilot_control_command(
 
     if sub == "skills":
         action = args[1].strip().lower() if len(args) > 1 else "show"
+        if "|" in action:
+            return "Choose one action only: show, add-dir, rm-dir, disable, or enable.", None
         dirs = _as_string_list(
             user_data.get(SESSION_SKILL_DIRS_KEY, settings.copilot_skill_directories)
         )
@@ -183,22 +248,30 @@ async def run_copilot_control_command(
         if action == "show":
             return (
                 "<b>Copilot skills</b>\n\n"
-                f"Directories: <code>{escape_html(', '.join(dirs) or '-')}</code>\n"
-                f"Disabled: <code>{escape_html(', '.join(disabled) or '-')}</code>",
+                f"Directories: <code>{escape_html(_preview_list(dirs))}</code>\n"
+                f"Disabled: <code>{escape_html(_preview_list(disabled))}</code>",
                 "HTML",
             )
 
         if len(args) < 3:
             return "Usage: /copilot skills add-dir|rm-dir|disable|enable <value>", None
 
-        value = args[2].strip()
-        if action == "add-dir" and value not in dirs:
+        value = " ".join(args[2:]).strip()
+        if action == "add-dir":
+            if value in dirs:
+                return "Directory already exists.", None
             dirs.append(value)
         elif action == "rm-dir":
+            if value not in dirs:
+                return "Directory not found.", None
             dirs = [d for d in dirs if d != value]
-        elif action == "disable" and value not in disabled:
+        elif action == "disable":
+            if value in disabled:
+                return "Skill is already disabled.", None
             disabled.append(value)
         elif action == "enable":
+            if value not in disabled:
+                return "Skill is not disabled.", None
             disabled = [s for s in disabled if s != value]
         else:
             return "Unknown skills action.", None
@@ -209,7 +282,8 @@ async def run_copilot_control_command(
             skill_directories=dirs,
             disabled_skills=disabled,
         )
-        return "Skills runtime controls updated.", None
+        _require_new_session_for_runtime_controls(user_data)
+        return "Skills runtime controls updated. New settings apply on next request.", None
 
     if sub == "mcp":
         if len(args) < 2:
@@ -228,6 +302,7 @@ async def run_copilot_control_command(
 
         user_data[SESSION_MCP_ENV_MODE_KEY] = mode
         claude_integration.update_copilot_runtime_controls(mcp_env_value_mode=mode)
+        _require_new_session_for_runtime_controls(user_data)
         return f"MCP env mode set to <code>{escape_html(mode)}</code>", "HTML"
 
     if sub == "external":
@@ -250,6 +325,7 @@ async def run_copilot_control_command(
             external_cli_server=(endpoint or None),
             external_cli_server_set=True,
         )
+        _require_new_session_for_runtime_controls(user_data)
         return (
             f"External CLI server: <code>{escape_html(endpoint or 'off')}</code>",
             "HTML",

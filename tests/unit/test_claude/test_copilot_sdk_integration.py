@@ -548,6 +548,24 @@ class TestMCPAndShutdownCoverage:
         config.mcp_config_path = str(invalid_json)
         assert manager._load_mcp_servers() == []
 
+    def test_load_mcp_servers_env_value_mode_variants(self, config, tmp_path):
+        mcp_json = tmp_path / "mcp-env.json"
+        mcp_json.write_text(
+            '{"mcpServers":{"local":{"command":"python","args":["-m","srv"],"env":{"TOKEN":"secret","K":"v"}}}}',
+            encoding="utf-8",
+        )
+        config.enable_mcp = True
+        config.mcp_config_path = str(mcp_json)
+        manager = CopilotSDKManager(config)
+
+        raw = manager._load_mcp_servers("raw")
+        masked = manager._load_mcp_servers("masked")
+        omitted = manager._load_mcp_servers("omit")
+
+        assert raw[0]["env"] == {"TOKEN": "secret", "K": "v"}
+        assert masked[0]["env"] == {"TOKEN": "***", "K": "***"}
+        assert omitted[0]["env"] == {}
+
     async def test_shutdown_handles_stop_exception(self, manager):
         client = MagicMock()
         client.stop = AsyncMock(side_effect=RuntimeError("stop failed"))
