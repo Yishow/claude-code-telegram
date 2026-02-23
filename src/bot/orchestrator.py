@@ -732,11 +732,14 @@ class MessageOrchestrator:
             )
             return
 
-        once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
-        if once:
-            context.user_data[ONCE_MODEL_KEY] = requested
-        else:
-            context.user_data[SESSION_MODEL_KEY] = requested
+        once = self._is_once_override(args)
+        self._set_session_or_once_override(
+            context,
+            once=once,
+            once_key=ONCE_MODEL_KEY,
+            session_key=SESSION_MODEL_KEY,
+            value=requested,
+        )
         await update.message.reply_text(
             (
                 f"Model one-shot override set to <code>{escape_html(requested)}</code>"
@@ -771,13 +774,19 @@ class MessageOrchestrator:
             )
             return
 
-        once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
-        if once:
-            context.user_data[ONCE_PROVIDER_KEY] = requested
-            text = f"Provider one-shot override set to <code>{requested}</code>"
-        else:
-            context.user_data[SESSION_PROVIDER_KEY] = requested
-            text = f"Provider switched to <code>{requested}</code>"
+        once = self._is_once_override(args)
+        self._set_session_or_once_override(
+            context,
+            once=once,
+            once_key=ONCE_PROVIDER_KEY,
+            session_key=SESSION_PROVIDER_KEY,
+            value=requested,
+        )
+        text = (
+            f"Provider one-shot override set to <code>{requested}</code>"
+            if once
+            else f"Provider switched to <code>{requested}</code>"
+        )
         await update.message.reply_text(text, parse_mode="HTML")
 
     async def agentic_copilot(
@@ -811,6 +820,63 @@ class MessageOrchestrator:
             await message.reply_text(text, parse_mode=parse_mode)
         else:
             await message.reply_text(text)
+
+    @staticmethod
+    def _is_once_override(args: List[str]) -> bool:
+        """Return whether command args request a one-shot override."""
+        return len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
+
+    @staticmethod
+    def _set_session_or_once_override(
+        context: ContextTypes.DEFAULT_TYPE,
+        *,
+        once: bool,
+        once_key: str,
+        session_key: str,
+        value: str,
+    ) -> None:
+        """Persist an override to session scope or one-shot scope."""
+        if once:
+            context.user_data[once_key] = value
+            return
+        context.user_data[session_key] = value
+
+    async def _run_command_with_controls(
+        self,
+        claude_integration: Any,
+        *,
+        prompt: str,
+        working_directory: Path,
+        user_id: int,
+        chat_id: int,
+        message_thread_id: Optional[int],
+        session_id: Optional[str],
+        on_stream: Optional[Callable[[StreamUpdate], Any]],
+        force_new: bool,
+        effective_controls: Dict[str, Any],
+        image_path: Optional[str] = None,
+    ) -> Any:
+        """Run provider request using normalized control payload."""
+        kwargs: Dict[str, Any] = {
+            "prompt": prompt,
+            "working_directory": working_directory,
+            "user_id": user_id,
+            "chat_id": chat_id,
+            "message_thread_id": message_thread_id,
+            "session_id": session_id,
+            "on_stream": on_stream,
+            "force_new": force_new,
+            "provider": effective_controls["provider"],
+            "copilot_model": effective_controls["copilot_model"],
+            "reasoning_effort": effective_controls["reasoning_effort"],
+            "skill_directories": effective_controls["skill_directories"],
+            "disabled_skills": effective_controls["disabled_skills"],
+            "mcp_env_value_mode": effective_controls["mcp_env_value_mode"],
+            "external_cli_server": effective_controls["external_cli_server"],
+        }
+        if image_path:
+            kwargs["image_path"] = image_path
+        return await claude_integration.run_command(**kwargs)
 
     def _format_verbose_progress(
         self,
@@ -1179,7 +1245,8 @@ class MessageOrchestrator:
         response_content = ""
         response_session_id = session_id
         try:
-            claude_response = await claude_integration.run_command(
+            claude_response = await self._run_command_with_controls(
+                claude_integration,
                 prompt=effective_prompt,
                 working_directory=current_dir,
                 user_id=user_id,
@@ -1188,13 +1255,7 @@ class MessageOrchestrator:
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
-                provider=effective_controls["provider"],
-                copilot_model=effective_controls["copilot_model"],
-                reasoning_effort=effective_controls["reasoning_effort"],
-                skill_directories=effective_controls["skill_directories"],
-                disabled_skills=effective_controls["disabled_skills"],
-                mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
-                external_cli_server=effective_controls["external_cli_server"],
+                effective_controls=effective_controls,
             )
 
             # New session created successfully — clear the one-shot flag
@@ -1442,7 +1503,8 @@ class MessageOrchestrator:
         response_content = ""
         response_session_id = session_id
         try:
-            claude_response = await claude_integration.run_command(
+            claude_response = await self._run_command_with_controls(
+                claude_integration,
                 prompt=effective_prompt,
                 working_directory=current_dir,
                 user_id=user_id,
@@ -1451,13 +1513,7 @@ class MessageOrchestrator:
                 session_id=session_id,
                 on_stream=on_stream,
                 force_new=force_new,
-                provider=effective_controls["provider"],
-                copilot_model=effective_controls["copilot_model"],
-                reasoning_effort=effective_controls["reasoning_effort"],
-                skill_directories=effective_controls["skill_directories"],
-                disabled_skills=effective_controls["disabled_skills"],
-                mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
-                external_cli_server=effective_controls["external_cli_server"],
+                effective_controls=effective_controls,
             )
 
             if force_new:
@@ -1629,7 +1685,8 @@ class MessageOrchestrator:
             response_content = ""
             response_session_id = session_id
             try:
-                claude_response = await claude_integration.run_command(
+                claude_response = await self._run_command_with_controls(
+                    claude_integration,
                     prompt=effective_prompt,
                     working_directory=current_dir,
                     user_id=user_id,
@@ -1638,13 +1695,7 @@ class MessageOrchestrator:
                     session_id=session_id,
                     on_stream=on_stream,
                     force_new=force_new,
-                    provider=effective_controls["provider"],
-                    copilot_model=effective_controls["copilot_model"],
-                    reasoning_effort=effective_controls["reasoning_effort"],
-                    skill_directories=effective_controls["skill_directories"],
-                    disabled_skills=effective_controls["disabled_skills"],
-                    mcp_env_value_mode=effective_controls["mcp_env_value_mode"],
-                    external_cli_server=effective_controls["external_cli_server"],
+                    effective_controls=effective_controls,
                     image_path=image_path,
                 )
                 response_content = claude_response.content
