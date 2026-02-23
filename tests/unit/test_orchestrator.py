@@ -107,8 +107,8 @@ def _memory_runtime_model() -> MemoryRuntimeSettingsModel:
     )
 
 
-def test_agentic_registers_7_commands(agentic_settings, deps):
-    """Agentic mode registers start/new/status/verbose/memory/repo/model commands."""
+def test_agentic_registers_9_commands(agentic_settings, deps):
+    """Agentic mode registers start/new/status/verbose/memory/repo/provider/model/copilot."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     app = MagicMock()
     app.add_handler = MagicMock()
@@ -125,14 +125,16 @@ def test_agentic_registers_7_commands(agentic_settings, deps):
     ]
     commands = [h[0][0].commands for h in cmd_handlers]
 
-    assert len(cmd_handlers) == 7
+    assert len(cmd_handlers) == 9
     assert frozenset({"start"}) in commands
     assert frozenset({"new"}) in commands
     assert frozenset({"status"}) in commands
     assert frozenset({"verbose"}) in commands
     assert frozenset({"memory"}) in commands
     assert frozenset({"repo"}) in commands
+    assert frozenset({"provider"}) in commands
     assert frozenset({"model"}) in commands
+    assert frozenset({"copilot"}) in commands
 
 
 def test_classic_registers_17_commands(classic_settings, deps):
@@ -182,13 +184,23 @@ def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
 
 
 async def test_agentic_bot_commands(agentic_settings, deps):
-    """Agentic mode returns 7 bot commands."""
+    """Agentic mode returns 9 bot commands."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
     commands = await orchestrator.get_bot_commands()
 
-    assert len(commands) == 7
+    assert len(commands) == 9
     cmd_names = [c.command for c in commands]
-    assert cmd_names == ["start", "new", "status", "verbose", "memory", "repo", "model"]
+    assert cmd_names == [
+        "start",
+        "new",
+        "status",
+        "verbose",
+        "memory",
+        "repo",
+        "provider",
+        "model",
+        "copilot",
+    ]
 
 
 async def test_classic_bot_commands(classic_settings, deps):
