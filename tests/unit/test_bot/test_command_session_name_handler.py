@@ -93,3 +93,28 @@ async def test_session_name_rejects_over_100_chars(tmp_path: Path):
     context.bot_data["claude_integration"].set_session_display_name.assert_not_awaited()
     update.message.reply_text.assert_called_once()
     assert "Name too long" in update.message.reply_text.call_args.args[0]
+
+
+async def test_session_name_empty_string_resets_to_unnamed(tmp_path: Path):
+    """Quoted empty string should reset display name to unnamed."""
+    update = _make_update()
+    context = _make_context(tmp_path, ['""'])
+    context.bot_data["claude_integration"].get_session_info = AsyncMock(
+        return_value={"session_id": "session-abc", "display_name": "Old Name"}
+    )
+    context.bot_data["claude_integration"].set_session_display_name = AsyncMock(
+        return_value={
+            "session_id": "session-abc",
+            "display_name": None,
+        }
+    )
+
+    await command_module.session_name_command(update, context)
+
+    context.bot_data["claude_integration"].set_session_display_name.assert_awaited_once_with(
+        session_id="session-abc",
+        user_id=42,
+        display_name=None,
+    )
+    update.message.reply_text.assert_called_once()
+    assert "未命名" in update.message.reply_text.call_args.args[0]

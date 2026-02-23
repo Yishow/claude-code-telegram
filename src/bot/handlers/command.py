@@ -1061,14 +1061,14 @@ async def session_name_command(update: Update, context: ContextTypes.DEFAULT_TYP
         return
 
     requested_name = " ".join(args).strip()
-    if not requested_name:
-        await update.message.reply_text(
-            "❌ <b>Session name cannot be empty.</b>",
-            parse_mode="HTML",
-        )
-        return
+    if (
+        len(requested_name) >= 2
+        and requested_name[0] == requested_name[-1]
+        and requested_name[0] in {'"', "'"}
+    ):
+        requested_name = requested_name[1:-1].strip()
 
-    should_reset = requested_name.casefold() in {
+    should_reset = not requested_name or requested_name.casefold() in {
         keyword.casefold() for keyword in SESSION_NAME_RESET_KEYWORDS
     }
     if not should_reset and len(requested_name) > SESSION_NAME_MAX_LENGTH:
