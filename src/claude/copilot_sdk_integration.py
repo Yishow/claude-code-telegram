@@ -7,6 +7,7 @@ policy-aware runtime controls, and reliability guardrails).
 
 import asyncio
 import hashlib
+import importlib.util
 import json
 import re
 from dataclasses import dataclass, field
@@ -18,11 +19,12 @@ import structlog
 
 from ..config.settings import Settings
 from .copilot_interaction_bridge import CopilotInteractionBridge
-from .exceptions import (
-    ClaudeProcessError,
-    ClaudeTimeoutError,
-    CopilotAuthenticationError,
-)
+from .exceptions import ClaudeProcessError, ClaudeTimeoutError
+
+try:
+    from .exceptions import CopilotAuthenticationError
+except ImportError:  # pragma: no cover - mixed-version runtime fallback
+    CopilotAuthenticationError = ClaudeProcessError
 from .monitor import ToolMonitor
 
 logger = structlog.get_logger()

@@ -20,8 +20,12 @@ from ...claude.exceptions import (
     ClaudeSessionError,
     ClaudeTimeoutError,
     ClaudeToolValidationError,
-    CopilotAuthenticationError,
 )
+
+try:
+    from ...claude.exceptions import CopilotAuthenticationError
+except ImportError:  # pragma: no cover - mixed-version runtime fallback
+    CopilotAuthenticationError = ClaudeProcessError
 from ...config.settings import Settings
 from ...security.audit import AuditLogger
 from ...security.rate_limiter import RateLimiter
