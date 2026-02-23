@@ -96,6 +96,7 @@ COPILOT_EXTERNAL_CLI_SERVER=
 COPILOT_CONFIG_DIR_POLICY=global         # global|per_project
 COPILOT_SESSION_STORE_PATH=data/copilot-session-map.json
 COPILOT_PERMISSION_TIMEOUT_SECONDS=120   # auto-deny permission prompt timeout
+COPILOT_PERMISSION_MODE=interactive      # interactive|auto_approve|auto_deny
 
 # MCP forwarding policy for Copilot
 MCP_ENV_VALUE_MODE=raw                   # raw|masked|omit

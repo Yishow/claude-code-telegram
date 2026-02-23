@@ -387,6 +387,28 @@ def test_copilot_permission_timeout_validation(tmp_path):
         )
 
 
+def test_copilot_permission_mode_validation(tmp_path):
+    """copilot_permission_mode accepts known values only."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_permission_mode="auto_approve",
+    )
+    assert settings.copilot_permission_mode == "auto_approve"
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            copilot_permission_mode="always_allow",
+        )
+
+
 def test_copilot_runtime_policy_parsing(tmp_path):
     """Copilot runtime policy fields parse and validate correctly."""
     project_dir = tmp_path / "projects"

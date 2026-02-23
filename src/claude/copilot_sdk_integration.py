@@ -305,61 +305,74 @@ class CopilotSDKManager:
             tool_call_id: str = str(
                 self._read_field(request, "toolCallId", "tool_call_id", default="") or ""
             )
+            permission_mode = str(
+                getattr(self.config, "copilot_permission_mode", "interactive")
+            ).lower()
 
-            if stream_callback and chat_id:
-                meta = await self.interaction_bridge.create_permission_request(
-                    user_id=user_id,
-                    chat_id=chat_id,
-                    message_thread_id=message_thread_id,
-                    kind=kind,
-                    tool_call_id=tool_call_id,
-                )
-                await _emit(
-                    CopilotStreamUpdate(
-                        type="permission_request",
-                        content=kind,
-                        metadata=meta,
+            decision_kind = ""
+            if permission_mode == "auto_approve":
+                decision_kind = "approved"
+            elif permission_mode == "auto_deny":
+                decision_kind = "denied-by-rules"
+
+            if not decision_kind:
+                if stream_callback and chat_id:
+                    meta = await self.interaction_bridge.create_permission_request(
+                        user_id=user_id,
+                        chat_id=chat_id,
+                        message_thread_id=message_thread_id,
+                        kind=kind,
+                        tool_call_id=tool_call_id,
                     )
-                )
-                approved = bool(
-                    await self.interaction_bridge.wait_for_result(
-                        meta["interaction_id"]
+                    await _emit(
+                        CopilotStreamUpdate(
+                            type="permission_request",
+                            content=kind,
+                            metadata=meta,
+                        )
                     )
-                )
-            elif stream_callback:
-                future: "asyncio.Future[bool]" = (
-                    asyncio.get_event_loop().create_future()
-                )
-                await _emit(
-                    CopilotStreamUpdate(
-                        type="permission_request",
-                        content=kind,
-                        metadata={
-                            "kind": kind,
-                            "tool_call_id": tool_call_id,
-                            "future": future,
-                        },
-                    )
-                )
-                try:
                     approved = bool(
-                        await asyncio.wait_for(asyncio.shield(future), timeout=120)
+                        await self.interaction_bridge.wait_for_result(
+                            meta["interaction_id"]
+                        )
                     )
-                except asyncio.TimeoutError:
-                    approved = False
-            else:
-                approved = True
+                elif stream_callback:
+                    future: "asyncio.Future[bool]" = (
+                        asyncio.get_event_loop().create_future()
+                    )
+                    await _emit(
+                        CopilotStreamUpdate(
+                            type="permission_request",
+                            content=kind,
+                            metadata={
+                                "kind": kind,
+                                "tool_call_id": tool_call_id,
+                                "future": future,
+                            },
+                        )
+                    )
+                    try:
+                        approved = bool(
+                            await asyncio.wait_for(asyncio.shield(future), timeout=120)
+                        )
+                    except asyncio.TimeoutError:
+                        approved = False
+                else:
+                    approved = True
+
+                decision_kind = (
+                    "approved" if approved else "denied-interactively-by-user"
+                )
 
             logger.info(
                 "Copilot permission decision",
                 kind=kind,
-                approved=approved,
+                decision_kind=decision_kind,
+                permission_mode=permission_mode,
                 user_id=user_id,
             )
 
-            if approved:
-                return {"kind": "approved", "rules": []}
-            return {"kind": "denied-interactively-by-user", "rules": []}
+            return {"kind": decision_kind, "rules": []}
 
         async def _on_user_input_request(request: Any) -> Dict[str, Any]:
             question: str = str(self._read_field(request, "question", default="") or "")
@@ -763,6 +776,9 @@ class CopilotSDKManager:
                     self.config, "copilot_config_dir_policy", "global"
                 ),
                 "permission_timeout_seconds": self.interaction_bridge.permission_timeout_seconds,
+                "permission_mode": getattr(
+                    self.config, "copilot_permission_mode", "interactive"
+                ),
             },
             "session": {
                 "tracked_sessions": len(self._session_map),

@@ -136,6 +136,15 @@ class Settings(BaseSettings):
         ge=1,
         le=3600,
     )
+    copilot_permission_mode: Literal[
+        "interactive", "auto_approve", "auto_deny"
+    ] = Field(
+        "interactive",
+        description=(
+            "Copilot permission mode: interactive approval, automatic approval, "
+            "or automatic deny"
+        ),
+    )
     default_provider: Literal["claude", "copilot"] = Field(
         "claude", description="Default AI provider: claude or copilot"
     )

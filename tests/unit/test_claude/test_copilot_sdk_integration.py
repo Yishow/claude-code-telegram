@@ -442,6 +442,70 @@ class TestHookAndEventCoverage:
         assert denied_on_timeout["kind"] == "denied-interactively-by-user"
         assert empty_on_timeout == {"answer": "", "wasFreeform": False}
 
+    async def test_permission_mode_auto_approve_skips_interactive_bridge(
+        self, tmp_path
+    ):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            copilot_permission_mode="auto_approve",
+        )
+        bridge = MagicMock()
+        bridge.create_permission_request = AsyncMock()
+        bridge.wait_for_result = AsyncMock(return_value=False)
+        bridge.ask_user_timeout_seconds = 300
+        manager = CopilotSDKManager(config, interaction_bridge=bridge)
+
+        updates = []
+
+        async def stream_callback(update):
+            updates.append(update.type)
+
+        session = _make_session("sid-auto-approve", "ok")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="hooks",
+                working_directory=tmp_path,
+                user_id=1,
+                chat_id=123,
+                stream_callback=stream_callback,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        permission_cb = session_config["on_permission_request"]
+        result = await permission_cb(SimpleNamespace(kind="write", toolCallId="tc-1"), None)
+
+        assert result["kind"] == "approved"
+        bridge.create_permission_request.assert_not_called()
+        bridge.wait_for_result.assert_not_called()
+        assert "permission_request" not in updates
+
+    async def test_permission_mode_auto_deny_returns_rules_deny(self, tmp_path):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            copilot_permission_mode="auto_deny",
+        )
+        manager = CopilotSDKManager(config)
+
+        session = _make_session("sid-auto-deny", "ok")
+        client = _make_client(session)
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="hooks",
+                working_directory=tmp_path,
+                user_id=1,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        permission_cb = session_config["on_permission_request"]
+        result = await permission_cb(SimpleNamespace(kind="shell", toolCallId="tc-2"), None)
+        assert result["kind"] == "denied-by-rules"
+
 
 class TestMCPAndShutdownCoverage:
     async def test_mcp_servers_loaded_and_applied_to_session_config(
