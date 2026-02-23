@@ -18,6 +18,8 @@ Ship a requested change in this fork without asking the user to repeat git workf
 - Implement directly unless user explicitly asks for planning only.
 - Keep blast radius minimal: touch only files required by the task.
 - Prefer additive changes over broad rewrites when both satisfy requirements.
+- For new features, prefer creating new files/modules first; avoid modifying original team-designed files unless integration is required.
+- When integration is required, keep legacy behavior and existing architecture contracts unchanged.
 - Verify changes before commit.
 - Commit with a clear, scoped, detailed Traditional Chinese message.
 
@@ -111,6 +113,8 @@ Provide:
 
 - Start from latest upstream state before coding (`make sync`).
 - Use one feature branch per task, named by task scope.
+- For new features, implement in additive files/modules first; keep existing team files to minimal adapter/wiring edits.
+- Do not alter original team design/architecture contracts unless explicitly required by the task and documented.
 - Keep interfaces stable first; add compatibility shims when needed.
 - Add/adjust targeted tests before broad refactors.
 - Run targeted verification early and often, not only at the end.
