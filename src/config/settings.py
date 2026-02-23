@@ -310,6 +310,48 @@ class Settings(BaseSettings):
         ge=1,
         le=3650,
     )
+    memory_metrics_window_hours: int = Field(
+        24,
+        description="Rolling window (hours) for memory metrics summaries",
+        ge=1,
+        le=168,
+    )
+    memory_health_max_fallback_rate: float = Field(
+        0.20,
+        description="Fallback-rate threshold used by memory health checks",
+        ge=0.0,
+        le=1.0,
+    )
+    memory_health_max_failure_rate: float = Field(
+        0.10,
+        description="Failure-rate threshold used by memory health checks",
+        ge=0.0,
+        le=1.0,
+    )
+    memory_health_max_p95_latency_ms: int = Field(
+        2500,
+        description="P95 latency threshold for memory health checks in milliseconds",
+        ge=50,
+        le=60000,
+    )
+    memory_benchmark_min_hit_rate: float = Field(
+        0.60,
+        description="Minimum acceptable memory hit-rate for optimization benchmark",
+        ge=0.0,
+        le=1.0,
+    )
+    memory_benchmark_max_fallback_rate: float = Field(
+        0.20,
+        description="Maximum acceptable fallback-rate for optimization benchmark",
+        ge=0.0,
+        le=1.0,
+    )
+    memory_benchmark_max_p95_latency_ms: int = Field(
+        3000,
+        description="Maximum acceptable p95 latency in optimization benchmark",
+        ge=50,
+        le=60000,
+    )
 
     # Output verbosity (0=quiet, 1=normal, 2=detailed)
     verbose_level: int = Field(
