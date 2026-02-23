@@ -58,6 +58,17 @@ def _make_client(session: MagicMock) -> MagicMock:
 
 
 class TestExecuteCommand:
+    async def test_uses_configurable_permission_timeout(self, tmp_path):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            copilot_permission_timeout_seconds=321,
+        )
+        manager = CopilotSDKManager(config)
+
+        assert manager.interaction_bridge.permission_timeout_seconds == 321
+
     async def test_new_session_returns_content(self, manager, tmp_path):
         session = _make_session("sid-1", "Hi there!")
         client = _make_client(session)

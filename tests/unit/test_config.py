@@ -365,6 +365,28 @@ def test_copilot_fallback_mode_validation(tmp_path):
         )
 
 
+def test_copilot_permission_timeout_validation(tmp_path):
+    """copilot_permission_timeout_seconds enforces positive range."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_permission_timeout_seconds=300,
+    )
+    assert settings.copilot_permission_timeout_seconds == 300
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            copilot_permission_timeout_seconds=0,
+        )
+
+
 def test_copilot_runtime_policy_parsing(tmp_path):
     """Copilot runtime policy fields parse and validate correctly."""
     project_dir = tmp_path / "projects"

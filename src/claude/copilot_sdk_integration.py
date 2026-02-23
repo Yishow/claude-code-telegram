@@ -66,7 +66,11 @@ class CopilotSDKManager:
     ):
         self.config = config
         self.tool_monitor = tool_monitor
-        self.interaction_bridge = interaction_bridge or CopilotInteractionBridge()
+        self.interaction_bridge = interaction_bridge or CopilotInteractionBridge(
+            permission_timeout_seconds=int(
+                getattr(config, "copilot_permission_timeout_seconds", 120)
+            )
+        )
 
         self._client: Optional[Any] = None
         self._client_lock = asyncio.Lock()
@@ -758,6 +762,7 @@ class CopilotSDKManager:
                 "config_dir_policy": getattr(
                     self.config, "copilot_config_dir_policy", "global"
                 ),
+                "permission_timeout_seconds": self.interaction_bridge.permission_timeout_seconds,
             },
             "session": {
                 "tracked_sessions": len(self._session_map),

@@ -264,6 +264,7 @@ ALLOWED_USERS=123456789          # Comma-separated Telegram user IDs
 DEFAULT_PROVIDER=claude            # claude|copilot
 COPILOT_MODEL=gpt-5.3-codex
 COPILOT_FALLBACK_MODE=sdk_then_cli # sdk_only|sdk_then_cli
+COPILOT_PERMISSION_TIMEOUT_SECONDS=120 # Auto-deny timeout for permission prompts
 
 # Claude
 ANTHROPIC_API_KEY=sk-ant-...     # API key (optional if using CLI auth)
