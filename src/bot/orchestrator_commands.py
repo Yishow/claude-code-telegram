@@ -197,12 +197,23 @@ class MessageOrchestratorCommandsMixin:
             current = context.user_data.get(
                 SESSION_MODEL_KEY, self.settings.copilot_model
             )
-            model_list = "\n".join(f"  <code>{m}</code>" for m in COPILOT_MODELS)
+            # Build inline keyboard for model selection (2 per row)
+            keyboard_rows: List[list] = []  # type: ignore[type-arg]
+            for i in range(0, len(COPILOT_MODELS), 2):
+                row = []
+                for j in range(2):
+                    if i + j < len(COPILOT_MODELS):
+                        m = COPILOT_MODELS[i + j]
+                        label = m
+                        row.append(InlineKeyboardButton(label, callback_data=f"model:{m}"))
+                keyboard_rows.append(row)
+
+            reply_markup = InlineKeyboardMarkup(keyboard_rows)
             await update.message.reply_text(
                 f"Current model: <code>{escape_html(current)}</code>\n\n"
-                f"<b>Available models:</b>\n{model_list}\n\n"
-                "Usage: <code>/model &lt;model_name&gt; [once]</code>",
+                f"<b>Available models:</b>",
                 parse_mode="HTML",
+                reply_markup=reply_markup,
             )
             return
 

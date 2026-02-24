@@ -120,19 +120,21 @@ class MessageOrchestratorCallbacksMixin:
             icon = "\U0001f4e6" if is_git else "\U0001f4c1"
             lines.append(f"{icon} <code>{escape_html(d.name)}/</code>")
 
-        # Build inline keyboard (2 per row)
+        # Build inline keyboard (2 per row) — browsing mode (cd:browse:name)
         for i in range(0, len(entries), 2):
             row = []
             for j in range(2):
                 if i + j < len(entries):
                     name = entries[i + j].name
-                    row.append(InlineKeyboardButton(name, callback_data=f"cd:{name}"))
+                    row.append(InlineKeyboardButton(name, callback_data=f"cd:browse:{name}"))
             keyboard_rows.append(row)
 
         nav_row = []
         if current_dir != root:
-            nav_row.append(InlineKeyboardButton("⬆️ Up", callback_data="cd:.."))
-        nav_row.append(InlineKeyboardButton("🏠 Root", callback_data="cd:/"))
+            nav_row.append(InlineKeyboardButton("⬆️ Up", callback_data="cd:browse:.."))
+        nav_row.append(InlineKeyboardButton("🏠 Root", callback_data="cd:browse:/"))
+        # Confirm selection for the currently shown directory
+        nav_row.append(InlineKeyboardButton("✅ Confirm", callback_data="cd:confirm"))
         keyboard_rows.append(nav_row)
 
         reply_markup = InlineKeyboardMarkup(keyboard_rows)
@@ -256,8 +258,11 @@ class MessageOrchestratorCallbacksMixin:
         query = update.callback_query
         await query.answer()
 
-        data = query.data
-        _, project_name = data.split(":", 1)
+        data = query.data or ""
+        parts = data.split(":")
+        # Support formats: cd:browse:<name>, cd:confirm, cd:<name> (legacy)
+        action = parts[1] if len(parts) > 1 else ""
+        payload = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 else "")
 
         root = self.settings.approved_directory.resolve()
         current_dir = context.user_data.get("current_directory", root)
@@ -265,6 +270,44 @@ class MessageOrchestratorCallbacksMixin:
             current_dir = root
         if not current_dir.is_dir() or not self._is_within_repo_root(current_dir):
             current_dir = root
+
+        # If confirm — set current_directory to pending or current view
+        if action == "confirm":
+            pending = context.user_data.get("pending_directory")
+            target_path = pending or current_dir
+            session_id = await self._set_current_directory(
+                context, query.from_user.id, target_path
+            )
+
+            is_git = (target_path / ".git").is_dir()
+            git_badge = " (git)" if is_git else ""
+            session_badge = " · session resumed" if session_id else ""
+            relative_display = self._repo_relative_display(target_path)
+
+            await query.edit_message_text(
+                f"Switched to <code>{escape_html(relative_display)}</code>"
+                f"{git_badge}{session_badge}",
+                parse_mode="HTML",
+            )
+
+            # Audit log
+            audit_logger = context.bot_data.get("audit_logger")
+            if audit_logger:
+                await audit_logger.log_command(
+                    user_id=query.from_user.id,
+                    command="cd",
+                    args=[str(target_path)],
+                    success=True,
+                )
+            # clear pending
+            context.user_data.pop("pending_directory", None)
+            return
+
+        # browsing: navigate to payload but don't persist until confirm
+        project_name = payload
+        if not project_name and len(parts) == 2:
+            # legacy cd:<name> format
+            project_name = parts[1]
 
         new_path = self._resolve_repo_target(project_name, current_dir)
         if not new_path:
@@ -281,30 +324,65 @@ class MessageOrchestratorCallbacksMixin:
             )
             return
 
-        session_id = await self._set_current_directory(
-            context, query.from_user.id, new_path
-        )
+        # Store pending directory and re-render listing at this path
+        context.user_data["pending_directory"] = new_path
+        # Reuse agentic_repo rendering logic: generate entries for new_path
+        try:
+            entries = sorted(
+                [
+                    d
+                    for d in new_path.iterdir()
+                    if d.is_dir() and not d.name.startswith(".")
+                ],
+                key=lambda d: d.name,
+            )
+        except OSError as e:
+            await query.edit_message_text(f"Error reading workspace: {e}")
+            return
 
-        is_git = (new_path / ".git").is_dir()
-        git_badge = " (git)" if is_git else ""
-        session_badge = " · session resumed" if session_id else ""
-        relative_display = self._repo_relative_display(new_path)
+        current_display = self._repo_relative_display(new_path)
+        if not entries:
+            await query.edit_message_text(
+                f"<b>Repos</b>\n\n"
+                f"Current: <code>{escape_html(current_display)}</code>\n"
+                f"Root: <code>{escape_html(str(root))}</code>\n\n"
+                "No subdirectories here.",
+                parse_mode="HTML",
+            )
+            return
+
+        lines: List[str] = []
+        keyboard_rows: List[list] = []  # type: ignore[type-arg]
+
+        for d in entries:
+            is_git = (d / ".git").is_dir()
+            icon = "\U0001f4e6" if is_git else "\U0001f4c1"
+            lines.append(f"{icon} <code>{escape_html(d.name)}/</code>")
+
+        for i in range(0, len(entries), 2):
+            row = []
+            for j in range(2):
+                if i + j < len(entries):
+                    name = entries[i + j].name
+                    row.append(InlineKeyboardButton(name, callback_data=f"cd:browse:{name}"))
+            keyboard_rows.append(row)
+
+        nav_row = []
+        if new_path != root:
+            nav_row.append(InlineKeyboardButton("⬆️ Up", callback_data="cd:browse:.."))
+        nav_row.append(InlineKeyboardButton("🏠 Root", callback_data="cd:browse:/"))
+        nav_row.append(InlineKeyboardButton("✅ Confirm", callback_data="cd:confirm"))
+        keyboard_rows.append(nav_row)
+
+        reply_markup = InlineKeyboardMarkup(keyboard_rows)
 
         await query.edit_message_text(
-            f"Switched to <code>{escape_html(relative_display)}</code>"
-            f"{git_badge}{session_badge}",
+            "<b>Repos</b>\n\n"
+            f"Current: <code>{escape_html(current_display)}</code>\n"
+            f"Root: <code>{escape_html(str(root))}</code>\n\n" + "\n".join(lines),
             parse_mode="HTML",
+            reply_markup=reply_markup,
         )
-
-        # Audit log
-        audit_logger = context.bot_data.get("audit_logger")
-        if audit_logger:
-            await audit_logger.log_command(
-                user_id=query.from_user.id,
-                command="cd",
-                args=[project_name],
-                success=True,
-            )
 
     async def _agentic_memory_callback(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -317,3 +395,45 @@ class MessageOrchestratorCallbacksMixin:
         data = query.data or "memory:panel"
         payload = data.split(":", 1)[1] if ":" in data else "panel"
         await callback.handle_memory_callback(query, payload, context)
+
+    async def _model_callback(
+        self, update: Update, context: ContextTypes.DEFAULT_TYPE
+    ) -> None:
+        """Handle model:<model> inline selection in agentic mode."""
+        query = update.callback_query
+        await query.answer()
+        data = query.data or ""
+        parts = data.split(":", 1)
+        model_name = parts[1] if len(parts) > 1 else ""
+        if not model_name:
+            await query.answer("No model selected.")
+            return
+        # Validate model
+        from ..claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
+
+        if model_name not in COPILOT_MODELS:
+            await query.edit_message_text(
+                f"Unknown model: <code>{escape_html(model_name)}</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        # Persist as session model (not a one-shot)
+        context.user_data[SESSION_MODEL_KEY] = model_name
+        try:
+            await query.edit_message_text(
+                f"Model switched to <code>{escape_html(model_name)}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        # Audit log
+        audit_logger = context.bot_data.get("audit_logger")
+        if audit_logger:
+            await audit_logger.log_command(
+                user_id=query.from_user.id,
+                command="model",
+                args=[model_name],
+                success=True,
+            )

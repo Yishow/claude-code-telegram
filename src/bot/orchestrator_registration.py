@@ -113,6 +113,14 @@ class MessageOrchestratorRegistrationMixin:
             )
         )
 
+        # model: inline model selection in agentic mode
+        app.add_handler(
+            CallbackQueryHandler(
+                self._inject_deps(self._model_callback),
+                pattern=r"^model:",
+            )
+        )
+
         # perm: Approve/Deny for Copilot permission requests
         app.add_handler(
             CallbackQueryHandler(
