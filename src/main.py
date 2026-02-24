@@ -3,6 +3,7 @@
 import argparse
 import asyncio
 import logging
+import os
 import re
 import signal
 import sys
@@ -89,23 +90,26 @@ def setup_logging(debug: bool = False) -> None:
         logging.getLogger("httpx").setLevel(logging.WARNING)
         logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    # Configure structlog
+    # Configure structlog with a human-friendly renderer for local operations.
+    renderer = structlog.dev.ConsoleRenderer(colors=debug)
+    running_in_journal = bool(os.environ.get("JOURNAL_STREAM"))
+    processors = [
+        structlog.stdlib.filter_by_level,
+        structlog.stdlib.add_logger_name,
+        structlog.stdlib.add_log_level,
+        structlog.stdlib.PositionalArgumentsFormatter(),
+        structlog.processors.StackInfoRenderer(),
+        structlog.processors.format_exc_info,
+        structlog.processors.UnicodeDecoder(),
+        renderer,
+    ]
+    if not running_in_journal:
+        # Keep app-level timestamp for plain terminal runs.
+        # In systemd/journal mode, journalctl already provides timestamps.
+        processors.insert(4, structlog.processors.TimeStamper(fmt="iso"))
+
     structlog.configure(
-        processors=[
-            structlog.stdlib.filter_by_level,
-            structlog.stdlib.add_logger_name,
-            structlog.stdlib.add_log_level,
-            structlog.stdlib.PositionalArgumentsFormatter(),
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.processors.StackInfoRenderer(),
-            structlog.processors.format_exc_info,
-            structlog.processors.UnicodeDecoder(),
-            (
-                structlog.processors.JSONRenderer()
-                if not debug
-                else structlog.dev.ConsoleRenderer()
-            ),
-        ],
+        processors=processors,
         context_class=dict,
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,

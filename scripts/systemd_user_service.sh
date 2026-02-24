@@ -172,12 +172,21 @@ restart_unit() {
 
 status_unit() {
   check_user_systemd
-  systemctl --user status "$SERVICE_NAME" --no-pager -l || true
+  systemctl --user status "$SERVICE_NAME" --no-pager -l --lines=0 || true
+  printf '\n'
+  info "Recent logs:"
+  journalctl --user -u "$SERVICE_NAME" -n "${STATUS_LOG_LINES:-20}" --output=short-iso --no-hostname \
+    | format_journal_timestamp
+}
+
+format_journal_timestamp() {
+  sed -u -E 's/^([0-9]{4}-[0-9]{2}-[0-9]{2})T([0-9]{2}:[0-9]{2}:[0-9]{2})([.][0-9]+)?([+-][0-9]{2}:[0-9]{2})?[[:space:]]/\1 \2 /'
 }
 
 logs_unit() {
   check_user_systemd
-  journalctl --user -u "$SERVICE_NAME" -f
+  journalctl --user -u "$SERVICE_NAME" -f --output=short-iso --no-hostname \
+    | format_journal_timestamp
 }
 
 disable_unit() {
