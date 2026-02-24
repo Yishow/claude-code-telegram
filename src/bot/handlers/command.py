@@ -1171,6 +1171,12 @@ async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 parse_mode="HTML",
             )
             return
+        if requested not in CLAUDE_MODELS:
+            await update.message.reply_text(
+                f"Unknown model: <code>{escape_html(requested)}</code>",
+                parse_mode="HTML",
+            )
+            return
 
         once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
         if once:

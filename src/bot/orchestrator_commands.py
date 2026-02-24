@@ -229,6 +229,12 @@ class MessageOrchestratorCommandsMixin:
             if not requested:
                 await update.message.reply_text("Please provide a model name.")
                 return
+            if requested not in CLAUDE_MODELS:
+                await update.message.reply_text(
+                    f"Unknown model: <code>{escape_html(requested)}</code>",
+                    parse_mode="HTML",
+                )
+                return
 
             once = self._is_once_override(args)
             self._set_session_or_once_override(

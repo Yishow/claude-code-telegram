@@ -47,13 +47,16 @@ from .monitor import _is_claude_internal_path, check_bash_directory_boundary
 logger = structlog.get_logger()
 
 CLAUDE_MODELS = [
-    "claude-opus-4-1-20250805",
-    "claude-opus-4-20250514",
-    "claude-sonnet-4-5-20250929",
-    "claude-sonnet-4-20250514",
-    "claude-3-7-sonnet-20250219",
-    "claude-3-5-sonnet-20241022",
-    "claude-3-5-haiku-20241022",
+    # Official Claude Code model aliases (updated 2026-02, source in support docs).
+    "claude-opus-4-5",
+    "claude-opus-4-1",
+    "claude-opus-4",
+    "claude-sonnet-4-6",
+    "claude-sonnet-4-5",
+    "claude-sonnet-4",
+    "claude-haiku-4-5",
+    "claude-sonnet-3-7",
+    "claude-haiku-3-5",
 ]
 
 

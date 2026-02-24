@@ -426,7 +426,7 @@ async def test_agentic_text_memory_hook_pipeline(agentic_settings, deps):
             controls={
                 "provider": "copilot",
                 "copilot_model": "gpt-5-mini",
-                "claude_model": "claude-3-5-sonnet-20241022",
+                "claude_model": "claude-sonnet-4-6",
                 "reasoning_effort": "high",
                 "skill_directories": [],
                 "disabled_skills": [],

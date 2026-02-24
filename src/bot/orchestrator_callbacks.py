@@ -435,6 +435,14 @@ class MessageOrchestratorCallbacksMixin:
                 return
             context.user_data[SESSION_MODEL_KEY] = model_name
         else:
+            from ..claude.sdk_integration import CLAUDE_MODELS  # noqa: PLC0415
+
+            if model_name not in CLAUDE_MODELS:
+                await query.edit_message_text(
+                    f"Unknown model: <code>{escape_html(model_name)}</code>",
+                    parse_mode="HTML",
+                )
+                return
             context.user_data[SESSION_CLAUDE_MODEL_KEY] = model_name
 
         try:

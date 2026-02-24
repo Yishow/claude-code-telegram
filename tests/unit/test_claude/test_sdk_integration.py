@@ -36,7 +36,7 @@ def _make_assistant_message(text="Test response"):
     """Create an AssistantMessage with proper structure for current SDK version."""
     return AssistantMessage(
         content=[TextBlock(text=text)],
-        model="claude-sonnet-4-20250514",
+        model="claude-sonnet-4-6",
     )
 
 
@@ -410,11 +410,11 @@ class TestClaudeSDKManager:
             await sdk_manager.execute_command(
                 prompt="New prompt",
                 working_directory=Path("/test"),
-                model="claude-3-5-haiku-20241022",
+                model="claude-haiku-3-5",
             )
 
         assert len(captured_options) == 1
-        assert captured_options[0].model == "claude-3-5-haiku-20241022"
+        assert captured_options[0].model == "claude-haiku-3-5"
 
 
 class TestClaudeSandboxSettings:
