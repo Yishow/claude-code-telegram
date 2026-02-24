@@ -34,6 +34,9 @@ def manager(config):
 
 
 class TestBuildCommand:
+    def test_exposes_shared_interaction_bridge(self, manager):
+        assert manager.interaction_bridge is manager.sdk_manager.interaction_bridge
+
     def test_new_session(self, manager):
         cmd = manager._build_command("hello", None, False, "gpt-5-mini")
         assert cmd[0].endswith("copilot")

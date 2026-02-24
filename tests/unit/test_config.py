@@ -387,6 +387,50 @@ def test_copilot_permission_timeout_validation(tmp_path):
         )
 
 
+def test_copilot_ask_user_timeout_validation(tmp_path):
+    """copilot_ask_user_timeout_seconds enforces configured range."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_ask_user_timeout_seconds=900,
+    )
+    assert settings.copilot_ask_user_timeout_seconds == 900
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            copilot_ask_user_timeout_seconds=0,
+        )
+
+
+def test_copilot_timeout_validation(tmp_path):
+    """copilot_timeout_seconds enforces positive values."""
+    project_dir = tmp_path / "projects"
+    project_dir.mkdir()
+
+    settings = Settings(
+        telegram_bot_token="test_token",
+        telegram_bot_username="test_bot",
+        approved_directory=str(project_dir),
+        copilot_timeout_seconds=1200,
+    )
+    assert settings.copilot_timeout_seconds == 1200
+
+    with pytest.raises(ValidationError):
+        Settings(
+            telegram_bot_token="test_token",
+            telegram_bot_username="test_bot",
+            approved_directory=str(project_dir),
+            copilot_timeout_seconds=0,
+        )
+
+
 def test_copilot_permission_mode_validation(tmp_path):
     """copilot_permission_mode accepts known values only."""
     project_dir = tmp_path / "projects"

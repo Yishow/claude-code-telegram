@@ -22,6 +22,7 @@ def config(tmp_path):
         telegram_bot_token="test:token",
         telegram_bot_username="testbot",
         approved_directory=tmp_path,
+        copilot_permission_mode="interactive",
     )
 
 
@@ -64,10 +65,12 @@ class TestExecuteCommand:
             telegram_bot_username="testbot",
             approved_directory=tmp_path,
             copilot_permission_timeout_seconds=321,
+            copilot_ask_user_timeout_seconds=654,
         )
         manager = CopilotSDKManager(config)
 
         assert manager.interaction_bridge.permission_timeout_seconds == 321
+        assert manager.interaction_bridge.ask_user_timeout_seconds == 654
 
     async def test_new_session_returns_content(self, manager, tmp_path):
         session = _make_session("sid-1", "Hi there!")
@@ -83,8 +86,12 @@ class TestExecuteCommand:
         assert response.content == "Hi there!"
         assert response.session_id == "sid-1"
         assert response.is_error is False
+        expected_timeout = manager.config.copilot_timeout_seconds + max(
+            manager.interaction_bridge.ask_user_timeout_seconds,
+            manager.interaction_bridge.permission_timeout_seconds,
+        )
         assert session.send_and_wait.call_args.kwargs["timeout"] == pytest.approx(
-            manager.config.claude_timeout_seconds
+            expected_timeout
         )
 
     async def test_session_id_stored_after_execution(self, manager, tmp_path):
@@ -139,6 +146,147 @@ class TestExecuteCommand:
 
         session_config = client.create_session.call_args[0][0]
         assert session_config.get("model") is None
+
+    async def test_session_config_registers_hooks_container(self, manager, tmp_path):
+        session = _make_session("sid-hooks-config")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="hello",
+                working_directory=tmp_path,
+                user_id=1,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        hooks = session_config.get("hooks")
+        assert isinstance(hooks, dict)
+        assert callable(hooks.get("on_pre_tool_use"))
+        assert callable(hooks.get("on_error_occurred"))
+
+    async def test_pre_tool_use_auto_allows_sandbox_excluded_command(self, tmp_path):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            sandbox_enabled=True,
+            sandbox_excluded_commands=["git"],
+        )
+        manager = CopilotSDKManager(config)
+
+        session = _make_session("sid-sandbox-allow")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="allow git",
+                working_directory=tmp_path,
+                user_id=1,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        pre_tool_cb = session_config["hooks"]["on_pre_tool_use"]
+        result = await pre_tool_cb(
+            SimpleNamespace(toolName="Bash", toolArgs={"command": "git commit -m x"}),
+            {},
+        )
+        assert result["permissionDecision"] == "allow"
+        assert "git" in result["permissionDecisionReason"]
+
+    async def test_pre_tool_use_auto_allows_cd_then_excluded_command(self, tmp_path):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            sandbox_enabled=True,
+            sandbox_excluded_commands=["git"],
+        )
+        manager = CopilotSDKManager(config)
+
+        session = _make_session("sid-sandbox-cd-git")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="allow cd && git",
+                working_directory=tmp_path,
+                user_id=1,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        pre_tool_cb = session_config["hooks"]["on_pre_tool_use"]
+        result = await pre_tool_cb(
+            SimpleNamespace(
+                toolName="Bash", toolArgs={"command": "cd repo && git status"}
+            ),
+            {},
+        )
+        assert result["permissionDecision"] == "allow"
+        assert "git" in result["permissionDecisionReason"]
+
+    async def test_pre_tool_use_auto_allows_python_module_excluded_command(
+        self, tmp_path
+    ):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            sandbox_enabled=True,
+            sandbox_excluded_commands=["pip"],
+        )
+        manager = CopilotSDKManager(config)
+
+        session = _make_session("sid-sandbox-python-pip")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="allow python -m pip",
+                working_directory=tmp_path,
+                user_id=1,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        pre_tool_cb = session_config["hooks"]["on_pre_tool_use"]
+        result = await pre_tool_cb(
+            SimpleNamespace(
+                toolName="Bash", toolArgs={"command": "python -m pip install -U pip"}
+            ),
+            {},
+        )
+        assert result["permissionDecision"] == "allow"
+        assert "pip" in result["permissionDecisionReason"]
+
+    async def test_pre_tool_use_denies_shell_outside_approved_directory(self, tmp_path):
+        config = Settings(
+            telegram_bot_token="test:token",
+            telegram_bot_username="testbot",
+            approved_directory=tmp_path,
+            sandbox_enabled=True,
+            sandbox_excluded_commands=["git"],
+        )
+        manager = CopilotSDKManager(config)
+
+        session = _make_session("sid-sandbox-deny")
+        client = _make_client(session)
+
+        with patch("copilot.CopilotClient", return_value=client):
+            await manager.execute_command(
+                prompt="deny outside",
+                working_directory=tmp_path,
+                user_id=1,
+            )
+
+        session_config = client.create_session.call_args[0][0]
+        pre_tool_cb = session_config["hooks"]["on_pre_tool_use"]
+        result = await pre_tool_cb(
+            SimpleNamespace(
+                toolName="Bash", toolArgs={"command": "cd /tmp && touch /tmp/x"}
+            ),
+            {},
+        )
+        assert result["permissionDecision"] == "deny"
+        assert "outside approved directory" in result["permissionDecisionReason"]
 
 
 # ── session lifecycle ─────────────────────────────────────────────────────────
@@ -384,10 +532,12 @@ class TestHookAndEventCoverage:
             {"kind": "read", "toolCallId": "tc-3"}, None
         )
         ask_user = await ask_user_cb(
-            SimpleNamespace(question="Q?", choices=["A"], allowFreeform=True)
+            SimpleNamespace(question="Q?", choices=["A"], allowFreeform=True),
+            {"session_id": "sid-hooks"},
         )
         ask_user_from_dict = await ask_user_cb(
-            {"question": "Q2?", "choices": ["B"], "allowFreeform": False}
+            {"question": "Q2?", "choices": ["B"], "allowFreeform": False},
+            {"session_id": "sid-hooks"},
         )
         retry = await error_cb(
             SimpleNamespace(
@@ -436,7 +586,8 @@ class TestHookAndEventCoverage:
             empty_on_timeout = await ask_user_cb(
                 SimpleNamespace(
                     question="timeout?", choices=["yes", "no"], allowFreeform=False
-                )
+                ),
+                {"session_id": "sid-hooks"},
             )
 
         assert denied_on_timeout["kind"] == "denied-interactively-by-user"

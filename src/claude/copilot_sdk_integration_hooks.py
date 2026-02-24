@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import shlex
+
 from . import copilot_sdk_integration_base as base
+from .monitor import check_bash_directory_boundary
 
 Any = base.Any
 AskUserRequest = base.AskUserRequest
@@ -58,6 +61,118 @@ class CopilotSDKHooksMixin:
         callback_result = stream_callback(update)
         if asyncio.iscoroutine(callback_result):
             asyncio.create_task(callback_result)
+
+    @staticmethod
+    def _extract_shell_command(tool_name: str, tool_args: Dict[str, Any]) -> str:
+        """Return shell command string when the tool call is shell-like."""
+        if str(tool_name).strip().lower() not in {"bash", "shell"}:
+            return ""
+
+        for key in ("command", "cmd", "input", "script", "bash_command"):
+            value = tool_args.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+        return ""
+
+    @staticmethod
+    def _extract_base_command(command: str) -> str:
+        """Extract the first executable token from a shell command."""
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return ""
+
+        if not tokens:
+            return ""
+
+        return CopilotSDKHooksMixin._extract_base_command_from_tokens(tokens)
+
+    @staticmethod
+    def _extract_segment_commands(command: str) -> List[str]:
+        """Extract one executable command per shell segment."""
+        try:
+            tokens = shlex.split(command)
+        except ValueError:
+            return []
+
+        if not tokens:
+            return []
+
+        separators = {"&&", "||", ";", "|", "&"}
+        segments: List[List[str]] = []
+        current: List[str] = []
+        for token in tokens:
+            if token in separators:
+                if current:
+                    segments.append(current)
+                current = []
+            else:
+                current.append(token)
+        if current:
+            segments.append(current)
+
+        commands: List[str] = []
+        for segment in segments:
+            base = CopilotSDKHooksMixin._extract_base_command_from_tokens(segment)
+            if base:
+                commands.append(base)
+        return commands
+
+    @staticmethod
+    def _extract_base_command_from_tokens(tokens: List[str]) -> str:
+        """Extract executable from one shell segment token list."""
+        separators = {"&&", "||", ";", "|", "&"}
+        wrappers = {"sudo", "command", "nohup", "time"}
+        python_binaries = {
+            "python",
+            "python3",
+            "python3.10",
+            "python3.11",
+            "python3.12",
+            "python3.13",
+            "py",
+        }
+
+        index = 0
+        while index < len(tokens):
+            token = tokens[index]
+            if token in separators:
+                return ""
+
+            base = Path(token).name.lower()
+            if base in wrappers:
+                index += 1
+                continue
+
+            if base == "env":
+                index += 1
+                while index < len(tokens):
+                    env_token = tokens[index]
+                    if env_token in separators:
+                        return ""
+                    if "=" in env_token and not env_token.startswith("-"):
+                        index += 1
+                        continue
+                    break
+                continue
+
+            if base in python_binaries:
+                if index + 2 < len(tokens) and tokens[index + 1] == "-m":
+                    module = tokens[index + 2].split(".", 1)[0].strip().lower()
+                    if module:
+                        return module
+                return base
+
+            if "=" in token and not token.startswith("/"):
+                maybe_key = token.split("=", 1)[0]
+                if maybe_key.isidentifier():
+                    index += 1
+                    continue
+
+            return base
+
+        return ""
 
     async def _handle_permission_request(
         self,
@@ -296,6 +411,67 @@ class CopilotSDKHooksMixin:
             ),
         )
 
+        shell_command = self._extract_shell_command(tool_name, tool_args)
+        if shell_command and bool(getattr(self.config, "sandbox_enabled", True)):
+            excluded_commands = {
+                str(cmd).strip().lower()
+                for cmd in (getattr(self.config, "sandbox_excluded_commands", []) or [])
+                if str(cmd).strip()
+            }
+            segment_commands = self._extract_segment_commands(shell_command)
+            should_auto_allow_excluded = (
+                bool(segment_commands)
+                and any(cmd in excluded_commands for cmd in segment_commands)
+                and all(
+                    cmd in excluded_commands or cmd == "cd" for cmd in segment_commands
+                )
+            )
+            if should_auto_allow_excluded:
+                matched = ",".join(
+                    sorted({cmd for cmd in segment_commands if cmd in excluded_commands})
+                )
+                reason = f"Sandbox excluded command auto-approved: {matched}"
+                logger.info(
+                    "Copilot shell command auto-approved by sandbox exclusion",
+                    tool_name=tool_name,
+                    excluded_commands=matched,
+                    user_id=user_id,
+                )
+                return {
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": reason,
+                }
+
+            valid_boundary, boundary_error = check_bash_directory_boundary(
+                shell_command,
+                working_directory,
+                Path(self.config.approved_directory),
+            )
+            if not valid_boundary:
+                reason = boundary_error or "Bash directory boundary violation"
+                await self._emit_update(
+                    stream_callback,
+                    CopilotStreamUpdate(
+                        type="tool_denied",
+                        content=tool_name,
+                        metadata={
+                            "tool_name": tool_name,
+                            "reason": reason,
+                        },
+                    ),
+                )
+                logger.warning(
+                    "Copilot shell command denied by directory boundary",
+                    tool_name=tool_name,
+                    reason=reason,
+                    user_id=user_id,
+                )
+                return {
+                    "permissionDecision": "deny",
+                    "permissionDecisionReason": reason,
+                    "denyReason": reason,
+                }
+
         if not self.tool_monitor:
             return None
 
@@ -325,9 +501,11 @@ class CopilotSDKHooksMixin:
             reason=error,
             user_id=user_id,
         )
+        reason = error or "Tool policy denied"
         return {
             "permissionDecision": "deny",
-            "denyReason": error or "Tool policy denied",
+            "permissionDecisionReason": reason,
+            "denyReason": reason,
         }
 
     def _dispatch_stream_event(
@@ -426,8 +604,15 @@ class CopilotSDKHooksMixin:
         """Build SessionConfig payload from runtime controls and hooks."""
         config_kwargs: Dict[str, Any] = {
             "workspace_path": str(working_directory),
+            "working_directory": str(working_directory),
             "on_user_input_request": on_user_input_request,
             "on_permission_request": on_permission_request,
+            "hooks": {
+                "on_pre_tool_use": on_pre_tool_use,
+                "on_error_occurred": on_error_occurred,
+            },
+            # Keep direct keys for backward compatibility with SDK variants that
+            # still accept hook handlers as top-level fields.
             "on_pre_tool_use": on_pre_tool_use,
             "on_error_occurred": on_error_occurred,
             "streaming": True,  # enables assistant.message_delta + reasoning_delta

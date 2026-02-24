@@ -85,7 +85,19 @@ class CopilotProcessManager:
     ):
         self.config = config
         self.active_processes: Dict[str, asyncio.subprocess.Process] = {}
-        self.sdk_manager = CopilotSDKManager(config)
+        self.interaction_bridge = interaction_bridge or CopilotInteractionBridge(
+            ask_user_timeout_seconds=int(
+                getattr(config, "copilot_ask_user_timeout_seconds", 300)
+            ),
+            permission_timeout_seconds=int(
+                getattr(config, "copilot_permission_timeout_seconds", 120)
+            )
+        )
+        self.sdk_manager = CopilotSDKManager(
+            config,
+            interaction_bridge=self.interaction_bridge,
+            tool_monitor=tool_monitor,
+        )
 
     def _get_copilot_binary(self) -> str:
         if getattr(self.config, "copilot_binary_path", None):
@@ -163,7 +175,13 @@ class CopilotProcessManager:
             )
             self.active_processes[process_id] = process
 
-            timeout = int(getattr(self.config, "claude_timeout_seconds", 300))
+            timeout = int(
+                getattr(
+                    self.config,
+                    "copilot_timeout_seconds",
+                    getattr(self.config, "claude_timeout_seconds", 300),
+                )
+            )
             stdout_bytes, stderr_bytes = await asyncio.wait_for(
                 process.communicate(),
                 timeout=timeout,
@@ -210,7 +228,13 @@ class CopilotProcessManager:
             if process_id in self.active_processes:
                 self.active_processes[process_id].kill()
                 await self.active_processes[process_id].wait()
-            timeout = int(getattr(self.config, "claude_timeout_seconds", 300))
+            timeout = int(
+                getattr(
+                    self.config,
+                    "copilot_timeout_seconds",
+                    getattr(self.config, "claude_timeout_seconds", 300),
+                )
+            )
             logger.error("Copilot CLI process timed out", process_id=process_id)
             raise ClaudeTimeoutError(f"Copilot timed out after {timeout}s")
 

@@ -82,6 +82,11 @@ class Settings(BaseSettings):
         None, description="Path to Copilot CLI binary"
     )
     copilot_model: str = Field("gpt-5.3-codex", description="Copilot model to use")
+    copilot_timeout_seconds: int = Field(
+        DEFAULT_CLAUDE_TIMEOUT_SECONDS,
+        description="Timeout for Copilot SDK/CLI request lifecycle",
+        ge=1,
+    )
     copilot_fallback_mode: Literal["sdk_only", "sdk_then_cli"] = Field(
         "sdk_then_cli",
         description="Copilot fallback policy: SDK only or SDK with CLI fallback",
@@ -135,6 +140,15 @@ class Settings(BaseSettings):
         ),
         ge=1,
         le=3600,
+    )
+    copilot_ask_user_timeout_seconds: int = Field(
+        300,
+        description=(
+            "Timeout in seconds for Copilot ask_user interactions "
+            "(auto-empty-answer when exceeded)"
+        ),
+        ge=1,
+        le=86400,
     )
     copilot_permission_mode: Literal[
         "interactive", "auto_approve", "auto_deny"

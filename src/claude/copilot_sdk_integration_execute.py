@@ -62,7 +62,18 @@ class CopilotSDKExecuteMixin:
             self._session_map.get(key) if continue_session else None
         )
 
-        timeout = float(getattr(self.config, "claude_timeout_seconds", 300))
+        base_timeout = float(
+            getattr(
+                self.config,
+                "copilot_timeout_seconds",
+                getattr(self.config, "claude_timeout_seconds", 300),
+            )
+        )
+        interaction_grace = max(
+            float(getattr(self.interaction_bridge, "ask_user_timeout_seconds", 300)),
+            float(getattr(self.interaction_bridge, "permission_timeout_seconds", 120)),
+        )
+        timeout = base_timeout + interaction_grace
         configured_model = getattr(self.config, "copilot_model", "gpt-5-mini")
         effective_model = configured_model if model is None else (model.strip() or None)
         runtime_controls = self._effective_controls(
@@ -82,6 +93,9 @@ class CopilotSDKExecuteMixin:
             continue_session=continue_session,
             model=effective_model,
             reasoning_effort=runtime_controls.get("reasoning_effort"),
+            base_timeout_seconds=base_timeout,
+            interaction_grace_seconds=interaction_grace,
+            effective_timeout_seconds=timeout,
         )
 
         # Build permission_request handler — sends Approve/Deny to Telegram,
@@ -95,7 +109,9 @@ class CopilotSDKExecuteMixin:
                 message_thread_id=message_thread_id,
             )
 
-        async def _on_user_input_request(request: Any) -> Dict[str, Any]:
+        async def _on_user_input_request(
+            request: Any, _context: Any = None
+        ) -> Dict[str, Any]:
             return await self._handle_user_input_request(
                 request=request,
                 stream_callback=stream_callback,
@@ -151,7 +167,10 @@ class CopilotSDKExecuteMixin:
                 try:
                     session = await client.resume_session(
                         copilot_session_id,
-                        ResumeSessionConfig(workspace_path=str(working_directory)),
+                        ResumeSessionConfig(
+                            workspace_path=str(working_directory),
+                            working_directory=str(working_directory),
+                        ),
                     )
                     logger.info(
                         "Resumed Copilot session", session_id=copilot_session_id

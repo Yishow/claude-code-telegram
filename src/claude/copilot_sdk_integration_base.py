@@ -90,6 +90,9 @@ class CopilotSDKManagerBase:
         self.config = config
         self.tool_monitor = tool_monitor
         self.interaction_bridge = interaction_bridge or CopilotInteractionBridge(
+            ask_user_timeout_seconds=int(
+                getattr(config, "copilot_ask_user_timeout_seconds", 300)
+            ),
             permission_timeout_seconds=int(
                 getattr(config, "copilot_permission_timeout_seconds", 120)
             )

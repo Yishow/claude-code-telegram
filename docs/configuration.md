@@ -83,6 +83,7 @@ CLAUDE_ALLOWED_TOOLS=Read,Write,Edit,Bash,Glob,Grep,LS,Task,TaskOutput,MultiEdit
 # Provider defaults
 DEFAULT_PROVIDER=claude                 # claude|copilot
 COPILOT_MODEL=gpt-5.3-codex
+COPILOT_TIMEOUT_SECONDS=300             # Copilot request timeout (independent from CLAUDE_TIMEOUT_SECONDS)
 COPILOT_FALLBACK_MODE=sdk_then_cli      # sdk_only|sdk_then_cli
 
 # Runtime control defaults
@@ -96,6 +97,7 @@ COPILOT_EXTERNAL_CLI_SERVER=
 COPILOT_CONFIG_DIR_POLICY=global         # global|per_project
 COPILOT_SESSION_STORE_PATH=data/copilot-session-map.json
 COPILOT_PERMISSION_TIMEOUT_SECONDS=120   # auto-deny permission prompt timeout
+COPILOT_ASK_USER_TIMEOUT_SECONDS=300     # ask_user response timeout
 COPILOT_PERMISSION_MODE=interactive      # interactive|auto_approve|auto_deny
 
 # MCP forwarding policy for Copilot
