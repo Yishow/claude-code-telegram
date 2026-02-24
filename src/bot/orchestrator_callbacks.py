@@ -259,10 +259,10 @@ class MessageOrchestratorCallbacksMixin:
         await query.answer()
 
         data = query.data or ""
-        parts = data.split(":")
+        parts = data.split(":", 2)
         # Support formats: cd:browse:<name>, cd:confirm, cd:<name> (legacy)
         action = parts[1] if len(parts) > 1 else ""
-        payload = parts[2] if len(parts) > 2 else (parts[1] if len(parts) > 1 else "")
+        payload = parts[2] if len(parts) > 2 else ""
 
         root = self.settings.approved_directory.resolve()
         current_dir = context.user_data.get("current_directory", root)
@@ -309,7 +309,15 @@ class MessageOrchestratorCallbacksMixin:
             # legacy cd:<name> format
             project_name = parts[1]
 
-        new_path = self._resolve_repo_target(project_name, current_dir)
+        # Resolve nested browse actions from pending_directory first; this keeps
+        # multi-step navigation consistent before the user presses confirm.
+        browse_base = context.user_data.get("pending_directory")
+        if not isinstance(browse_base, Path):
+            browse_base = current_dir
+        if not browse_base.is_dir() or not self._is_within_repo_root(browse_base):
+            browse_base = current_dir
+
+        new_path = self._resolve_repo_target(project_name, browse_base)
         if not new_path:
             await query.edit_message_text(
                 "Access denied: target directory is outside approved root.",

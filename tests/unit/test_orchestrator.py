@@ -625,6 +625,70 @@ async def test_agentic_callback_cd_parent(agentic_settings, deps, tmp_dir):
     audit_logger.log_command.assert_called_once()
 
 
+async def test_agentic_callback_browse_uses_pending_directory_base(
+    agentic_settings, deps, tmp_dir
+):
+    """Nested browse callbacks should resolve from pending_directory."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    first = tmp_dir / "github"
+    second = first / "claude-code-telegram"
+    second.mkdir(parents=True)
+
+    query = MagicMock()
+    query.from_user.id = 99
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": tmp_dir}
+    context.bot_data = {"claude_integration": None}
+
+    query.data = "cd:browse:github"
+    await orchestrator._agentic_callback(update, context)
+    assert context.user_data["pending_directory"] == first.resolve()
+    assert context.user_data["current_directory"] == tmp_dir
+
+    query.data = "cd:browse:claude-code-telegram"
+    await orchestrator._agentic_callback(update, context)
+    assert context.user_data["pending_directory"] == second.resolve()
+    call = query.edit_message_text.call_args
+    assert "Current: <code>github/claude-code-telegram/</code>" in call.args[0]
+    assert "No subdirectories here." in call.args[0]
+
+
+async def test_agentic_callback_browse_supports_colon_in_directory_name(
+    agentic_settings, deps, tmp_dir
+):
+    """Browse callback payload parsing should preserve ':' in directory names."""
+    orchestrator = MessageOrchestrator(agentic_settings, deps)
+
+    target = tmp_dir / "team:alpha"
+    target.mkdir()
+
+    query = MagicMock()
+    query.data = "cd:browse:team:alpha"
+    query.from_user.id = 77
+    query.answer = AsyncMock()
+    query.edit_message_text = AsyncMock()
+
+    update = MagicMock()
+    update.callback_query = query
+
+    context = MagicMock()
+    context.user_data = {"current_directory": tmp_dir}
+    context.bot_data = {"claude_integration": None}
+
+    await orchestrator._agentic_callback(update, context)
+
+    assert context.user_data["pending_directory"] == target.resolve()
+    call = query.edit_message_text.call_args
+    assert "Current: <code>team:alpha/</code>" in call.args[0]
+
+
 async def test_agentic_document_rejects_large_files(agentic_settings, deps):
     """Agentic document handler rejects files over 10MB."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
