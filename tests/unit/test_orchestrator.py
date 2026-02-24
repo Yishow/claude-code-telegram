@@ -181,8 +181,8 @@ def test_agentic_registers_text_document_photo_handlers(agentic_settings, deps):
 
     # 3 message handlers (text, document, photo)
     assert len(msg_handlers) == 3
-    # 4 callback handlers (cd:, memory:, ask_user:, perm:)
-    assert len(cb_handlers) == 4
+    # 5 callback handlers (cd:, memory:, ask_user:, model:, perm:)
+    assert len(cb_handlers) == 5
 
 
 async def test_agentic_bot_commands(agentic_settings, deps):
@@ -426,6 +426,7 @@ async def test_agentic_text_memory_hook_pipeline(agentic_settings, deps):
             controls={
                 "provider": "copilot",
                 "copilot_model": "gpt-5-mini",
+                "claude_model": "claude-3-5-sonnet-20241022",
                 "reasoning_effort": "high",
                 "skill_directories": [],
                 "disabled_skills": [],
@@ -486,13 +487,17 @@ async def test_agentic_callback_scoped_to_cd_pattern(agentic_settings, deps):
         if isinstance(call[0][0], CallbackQueryHandler)
     ]
 
-    assert len(cb_handlers) == 4
+    assert len(cb_handlers) == 5
     cd_handlers = [h for h in cb_handlers if h.pattern and h.pattern.pattern == "^cd:"]
     assert len(cd_handlers) == 1
     memory_handlers = [
         h for h in cb_handlers if h.pattern and h.pattern.pattern == "^memory:"
     ]
     assert len(memory_handlers) == 1
+    model_handlers = [
+        h for h in cb_handlers if h.pattern and h.pattern.pattern == "^model:"
+    ]
+    assert len(model_handlers) == 1
     # The cd: handler pattern should match cd: prefixed data
     assert cd_handlers[0].pattern is not None
     assert cd_handlers[0].pattern.match("cd:my_project")
@@ -529,10 +534,11 @@ async def test_agentic_repo_lists_from_current_directory(
 
     keyboard = call.kwargs["reply_markup"].inline_keyboard
     callback_data = [button.callback_data for row in keyboard for button in row]
-    assert "cd:proj-a" in callback_data
-    assert "cd:proj-b" in callback_data
-    assert "cd:.." in callback_data
-    assert "cd:/" in callback_data
+    assert "cd:browse:proj-a" in callback_data
+    assert "cd:browse:proj-b" in callback_data
+    assert "cd:browse:.." in callback_data
+    assert "cd:browse:/" in callback_data
+    assert "cd:confirm" in callback_data
 
 
 async def test_agentic_repo_switches_relative_to_current_directory(
@@ -589,7 +595,7 @@ async def test_agentic_repo_blocks_path_outside_approved_root(
 
 
 async def test_agentic_callback_cd_parent(agentic_settings, deps, tmp_dir):
-    """cd:.. callback should move to parent directory within approved root."""
+    """cd parent switch uses browse+confirm flow within approved root."""
     orchestrator = MessageOrchestrator(agentic_settings, deps)
 
     parent = tmp_dir / "team"
@@ -602,7 +608,7 @@ async def test_agentic_callback_cd_parent(agentic_settings, deps, tmp_dir):
     audit_logger.log_command = AsyncMock()
 
     query = MagicMock()
-    query.data = "cd:.."
+    query.data = "cd:browse:.."
     query.from_user.id = 88
     query.answer = AsyncMock()
     query.edit_message_text = AsyncMock()
@@ -617,6 +623,13 @@ async def test_agentic_callback_cd_parent(agentic_settings, deps, tmp_dir):
         "audit_logger": audit_logger,
     }
 
+    await orchestrator._agentic_callback(update, context)
+
+    # Browse stage updates pending_directory only.
+    assert context.user_data["current_directory"] == current
+    assert context.user_data["pending_directory"] == parent.resolve()
+
+    query.data = "cd:confirm"
     await orchestrator._agentic_callback(update, context)
 
     assert context.user_data["current_directory"] == parent.resolve()

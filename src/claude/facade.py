@@ -59,6 +59,7 @@ class ClaudeIntegration:
         force_new: bool = False,
         provider: Optional[ProviderType] = None,
         copilot_model: Optional[str] = None,
+        claude_model: Optional[str] = None,
         image_path: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         skill_directories: Optional[List[str]] = None,
@@ -122,6 +123,7 @@ class ClaudeIntegration:
                     stream_callback=on_stream,
                     provider=actual_provider,
                     copilot_model=copilot_model,
+                    claude_model=claude_model,
                     image_path=image_path,
                     reasoning_effort=reasoning_effort,
                     skill_directories=skill_directories,
@@ -157,6 +159,7 @@ class ClaudeIntegration:
                         stream_callback=on_stream,
                         provider=actual_provider,
                         copilot_model=copilot_model,
+                        claude_model=claude_model,
                         image_path=image_path,
                         reasoning_effort=reasoning_effort,
                         skill_directories=skill_directories,
@@ -211,6 +214,7 @@ class ClaudeIntegration:
         stream_callback: Optional[Callable] = None,
         provider: Optional[ProviderType] = None,
         copilot_model: Optional[str] = None,
+        claude_model: Optional[str] = None,
         image_path: Optional[str] = None,
         reasoning_effort: Optional[str] = None,
         skill_directories: Optional[List[str]] = None,
@@ -246,6 +250,7 @@ class ClaudeIntegration:
             session_id=session_id,
             continue_session=continue_session,
             stream_callback=stream_callback,
+            model=claude_model,
         )
 
     async def _find_resumable_session(

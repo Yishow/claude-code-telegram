@@ -36,6 +36,9 @@ get_runtime_snapshot = base.get_runtime_snapshot
 logger = base.logger
 time = base.time
 
+SESSION_CLAUDE_MODEL_KEY = "claude_model"
+ONCE_CLAUDE_MODEL_KEY = "one_shot_claude_model"
+
 
 class MessageOrchestratorCommandsMixin:
     async def agentic_start(
@@ -188,10 +191,64 @@ class MessageOrchestratorCommandsMixin:
     async def agentic_model(
         self, update: Update, context: ContextTypes.DEFAULT_TYPE
     ) -> None:
-        """Switch Copilot model: /model <model_name> [once]."""
+        """Switch model with provider-aware behavior."""
         from ..claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
+        from ..claude.sdk_integration import CLAUDE_MODELS  # noqa: PLC0415
 
         args = context.args or []
+        current_provider = str(
+            context.user_data.get(SESSION_PROVIDER_KEY, self.settings.default_provider)
+        ).lower()
+
+        if current_provider == "claude":
+            if not args:
+                current = context.user_data.get(
+                    SESSION_CLAUDE_MODEL_KEY, self.settings.claude_model
+                )
+                keyboard_rows: List[list] = []  # type: ignore[type-arg]
+                for i in range(0, len(CLAUDE_MODELS), 2):
+                    row = []
+                    for j in range(2):
+                        if i + j < len(CLAUDE_MODELS):
+                            m = CLAUDE_MODELS[i + j]
+                            row.append(
+                                InlineKeyboardButton(m, callback_data=f"model:{m}")
+                            )
+                    keyboard_rows.append(row)
+
+                reply_markup = InlineKeyboardMarkup(keyboard_rows)
+                await update.message.reply_text(
+                    f"Current model: <code>{escape_html(str(current))}</code>\n\n"
+                    f"<b>Available models:</b>",
+                    parse_mode="HTML",
+                    reply_markup=reply_markup,
+                )
+                return
+
+            requested = args[0].strip()
+            if not requested:
+                await update.message.reply_text("Please provide a model name.")
+                return
+
+            once = self._is_once_override(args)
+            self._set_session_or_once_override(
+                context,
+                once=once,
+                once_key=ONCE_CLAUDE_MODEL_KEY,
+                session_key=SESSION_CLAUDE_MODEL_KEY,
+                value=requested,
+            )
+            await update.message.reply_text(
+                (
+                    f"Model one-shot override set to "
+                    f"<code>{escape_html(requested)}</code> (provider: claude)"
+                    if once
+                    else f"Model switched to <code>{escape_html(requested)}</code> "
+                    f"(provider: claude)"
+                ),
+                parse_mode="HTML",
+            )
+            return
 
         if not args:
             current = context.user_data.get(
@@ -364,6 +421,7 @@ class MessageOrchestratorCommandsMixin:
             "force_new": force_new,
             "provider": effective_controls["provider"],
             "copilot_model": effective_controls["copilot_model"],
+            "claude_model": effective_controls["claude_model"],
             "reasoning_effort": effective_controls["reasoning_effort"],
             "skill_directories": effective_controls["skill_directories"],
             "disabled_skills": effective_controls["disabled_skills"],

@@ -36,6 +36,8 @@ get_runtime_snapshot = base.get_runtime_snapshot
 logger = base.logger
 time = base.time
 
+SESSION_CLAUDE_MODEL_KEY = "claude_model"
+
 
 class MessageOrchestratorCallbacksMixin:
     async def agentic_repo(
@@ -410,27 +412,35 @@ class MessageOrchestratorCallbacksMixin:
         """Handle model:<model> inline selection in agentic mode."""
         query = update.callback_query
         await query.answer()
+        current_provider = str(
+            context.user_data.get(SESSION_PROVIDER_KEY, self.settings.default_provider)
+        ).lower()
+
         data = query.data or ""
         parts = data.split(":", 1)
         model_name = parts[1] if len(parts) > 1 else ""
         if not model_name:
             await query.answer("No model selected.")
             return
-        # Validate model
-        from ..claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
 
-        if model_name not in COPILOT_MODELS:
-            await query.edit_message_text(
-                f"Unknown model: <code>{escape_html(model_name)}</code>",
-                parse_mode="HTML",
-            )
-            return
+        if current_provider == "copilot":
+            # Validate Copilot model list.
+            from ..claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
 
-        # Persist as session model (not a one-shot)
-        context.user_data[SESSION_MODEL_KEY] = model_name
+            if model_name not in COPILOT_MODELS:
+                await query.edit_message_text(
+                    f"Unknown model: <code>{escape_html(model_name)}</code>",
+                    parse_mode="HTML",
+                )
+                return
+            context.user_data[SESSION_MODEL_KEY] = model_name
+        else:
+            context.user_data[SESSION_CLAUDE_MODEL_KEY] = model_name
+
         try:
             await query.edit_message_text(
-                f"Model switched to <code>{escape_html(model_name)}</code>",
+                f"Model switched to <code>{escape_html(model_name)}</code> "
+                f"(provider: <code>{escape_html(current_provider)}</code>)",
                 parse_mode="HTML",
             )
         except Exception:

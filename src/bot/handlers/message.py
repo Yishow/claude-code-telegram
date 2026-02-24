@@ -6,6 +6,7 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from time import monotonic
 from typing import Optional
 
 import structlog
@@ -37,68 +38,80 @@ logger = structlog.get_logger()
 
 
 async def _format_progress_update(update_obj) -> Optional[str]:
-    """Format progress updates with enhanced context and visual indicators."""
-    if update_obj.type == "tool_result":
-        # Show tool completion status
-        tool_name = "Unknown"
-        if update_obj.metadata and update_obj.metadata.get("tool_use_id"):
-            # Try to extract tool name from context if available
-            tool_name = update_obj.metadata.get("tool_name", "Tool")
+    """Format stream updates into readable Telegram progress text."""
+    update_type = str(getattr(update_obj, "type", "") or "")
+    content = getattr(update_obj, "content", None)
+    metadata = getattr(update_obj, "metadata", None) or {}
+    tool_calls = getattr(update_obj, "tool_calls", None) or []
 
-        if update_obj.is_error():
-            return f"❌ <b>{tool_name} failed</b>\n\n<i>{update_obj.get_error_message()}</i>"
-        else:
-            execution_time = ""
-            if update_obj.metadata and update_obj.metadata.get("execution_time_ms"):
-                time_ms = update_obj.metadata["execution_time_ms"]
-                execution_time = f" ({time_ms}ms)"
-            return f"✅ <b>{tool_name} completed</b>{execution_time}"
+    if update_type == "tool":
+        tool_name = str(metadata.get("tool_name") or content or "tool")
+        action = str(metadata.get("action") or "pre").lower()
+        if action == "post":
+            return f"✅ <b>Tool completed:</b> <code>{escape_html(tool_name)}</code>"
+        return f"🔧 <b>Running tool:</b> <code>{escape_html(tool_name)}</code>"
 
-    elif update_obj.type == "progress":
-        # Handle progress updates
-        progress_text = f"🔄 <b>{update_obj.content or 'Working...'}</b>"
+    if update_type == "tool_result":
+        tool_name = str(metadata.get("tool_name") or "tool")
+        execution_time = metadata.get("execution_time_ms")
+        suffix = f" ({execution_time}ms)" if execution_time is not None else ""
+        error_text = metadata.get("error") or content
+        if error_text:
+            return (
+                f"❌ <b>Tool failed:</b> <code>{escape_html(tool_name)}</code>\n\n"
+                f"<i>{escape_html(str(error_text))}</i>"
+            )
+        return f"✅ <b>Tool completed:</b> <code>{escape_html(tool_name)}</code>{suffix}"
 
-        percentage = update_obj.get_progress_percentage()
-        if percentage is not None:
-            # Create a simple progress bar
-            filled = int(percentage / 10)  # 0-10 scale
+    if update_type == "progress":
+        progress_text = f"🔄 <b>{escape_html(str(content or 'Working...'))}</b>"
+        percentage = metadata.get("percentage")
+        if isinstance(percentage, (int, float)):
+            bounded = max(0, min(100, int(percentage)))
+            filled = int(bounded / 10)
             bar = "█" * filled + "░" * (10 - filled)
-            progress_text += f"\n\n<code>{bar}</code> {percentage}%"
-
-        if update_obj.progress:
-            step = update_obj.progress.get("step")
-            total_steps = update_obj.progress.get("total_steps")
-            if step and total_steps:
-                progress_text += f"\n\nStep {step} of {total_steps}"
-
+            progress_text += f"\n\n<code>{bar}</code> {bounded}%"
         return progress_text
 
-    elif update_obj.type == "error":
-        # Handle error messages
-        return f"❌ <b>Error</b>\n\n<i>{update_obj.get_error_message()}</i>"
+    if update_type == "error":
+        message = str(content or metadata.get("error") or "Unknown error")
+        return f"❌ <b>Error</b>\n\n<i>{escape_html(message)}</i>"
 
-    elif update_obj.type == "assistant" and update_obj.tool_calls:
-        # Show when tools are being called
-        tool_names = update_obj.get_tool_names()
+    if update_type == "reasoning":
+        snippet = str(content or "").strip()
+        if not snippet:
+            return None
+        preview = snippet[:220] + ("..." if len(snippet) > 220 else "")
+        return f"🧠 <b>Reasoning</b>\n\n<i>{escape_html(preview)}</i>"
+
+    if update_type == "result":
+        snippet = str(content or "").strip()
+        if not snippet:
+            return None
+        preview = snippet[:220] + ("..." if len(snippet) > 220 else "")
+        return f"✍️ <b>Generating response</b>\n\n<i>{escape_html(preview)}</i>"
+
+    if update_type == "assistant" and tool_calls:
+        tool_names = [
+            str(tool.get("name", "tool"))
+            for tool in tool_calls
+            if isinstance(tool, dict) and tool.get("name")
+        ]
         if tool_names:
-            tools_text = ", ".join(tool_names)
-            return f"🔧 <b>Using tools:</b> {tools_text}"
+            return f"🔧 <b>Using tools:</b> {escape_html(', '.join(tool_names))}"
 
-    elif update_obj.type == "assistant" and update_obj.content:
-        # Regular content updates with preview
-        content_preview = (
-            update_obj.content[:150] + "..."
-            if len(update_obj.content) > 150
-            else update_obj.content
+    if update_type == "assistant" and content:
+        raw = str(content).strip()
+        preview = raw[:220] + ("..." if len(raw) > 220 else "")
+        return f"🤖 <b>Claude is working...</b>\n\n<i>{escape_html(preview)}</i>"
+
+    if update_type == "system" and metadata.get("subtype") == "init":
+        tools_count = len(metadata.get("tools", []))
+        model = str(metadata.get("model", "Claude"))
+        return (
+            f"🚀 <b>Starting {escape_html(model)}</b> "
+            f"with {tools_count} tools available"
         )
-        return f"🤖 <b>Claude is working...</b>\n\n<i>{content_preview}</i>"
-
-    elif update_obj.type == "system":
-        # System initialization or other system messages
-        if update_obj.metadata and update_obj.metadata.get("subtype") == "init":
-            tools_count = len(update_obj.metadata.get("tools", []))
-            model = update_obj.metadata.get("model", "Claude")
-            return f"🚀 <b>Starting {model}</b> with {tools_count} tools available"
 
     return None
 
@@ -430,6 +443,29 @@ async def handle_text_message(
                     error=str(memory_error),
                 )
 
+        effective_provider = str(
+            effective_controls.get("provider") or settings.default_provider
+        ).lower()
+        effective_model = (
+            str(effective_controls.get("claude_model") or settings.claude_model)
+            if effective_provider == "claude"
+            else str(
+                effective_controls.get("copilot_model") or settings.copilot_model
+            )
+        )
+        try:
+            await progress_msg.edit_text(
+                "🤔 Processing your request...\n"
+                f"Provider: <code>{escape_html(effective_provider)}</code>\n"
+                f"Model: <code>{escape_html(effective_model)}</code>",
+                parse_mode="HTML",
+            )
+        except Exception:
+            pass
+
+        progress_state = {"last_text": "", "last_edit_at": 0.0}
+        min_edit_interval_seconds = 1.2
+
         # Enhanced stream updates handler with interactive bridge support
         async def stream_handler(update_obj):
             try:
@@ -518,7 +554,22 @@ async def handle_text_message(
 
                 progress_text = await _format_progress_update(update_obj)
                 if progress_text:
+                    update_type = str(getattr(update_obj, "type", "") or "")
+                    if progress_text == progress_state["last_text"]:
+                        return
+
+                    now = monotonic()
+                    priority_types = {"tool", "tool_denied", "error"}
+                    if (
+                        update_type not in priority_types
+                        and (now - progress_state["last_edit_at"])
+                        < min_edit_interval_seconds
+                    ):
+                        return
+
                     await progress_msg.edit_text(progress_text, parse_mode="HTML")
+                    progress_state["last_text"] = progress_text
+                    progress_state["last_edit_at"] = now
             except Exception as e:
                 logger.warning("Failed to update progress message", error=str(e))
 
@@ -540,6 +591,7 @@ async def handle_text_message(
                 force_new=force_new,
                 provider=effective_controls["provider"],
                 copilot_model=effective_controls["copilot_model"],
+                claude_model=effective_controls["claude_model"],
                 reasoning_effort=effective_controls["reasoning_effort"],
                 skill_directories=effective_controls["skill_directories"],
                 disabled_skills=effective_controls["disabled_skills"],
@@ -964,6 +1016,7 @@ async def handle_document(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 session_id=session_id,
                 provider=effective_controls["provider"],
                 copilot_model=effective_controls["copilot_model"],
+                claude_model=effective_controls["claude_model"],
                 reasoning_effort=effective_controls["reasoning_effort"],
                 skill_directories=effective_controls["skill_directories"],
                 disabled_skills=effective_controls["disabled_skills"],
@@ -1184,6 +1237,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     session_id=session_id,
                     provider=effective_controls["provider"],
                     copilot_model=effective_controls["copilot_model"],
+                    claude_model=effective_controls["claude_model"],
                     reasoning_effort=effective_controls["reasoning_effort"],
                     skill_directories=effective_controls["skill_directories"],
                     disabled_skills=effective_controls["disabled_skills"],

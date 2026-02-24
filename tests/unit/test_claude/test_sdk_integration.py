@@ -373,6 +373,49 @@ class TestClaudeSDKManager:
             not hasattr(captured_options[0], "resume") or not captured_options[0].resume
         )
 
+    async def test_execute_command_uses_configured_claude_model(self, sdk_manager):
+        """Claude SDK options should include configured default model."""
+        captured_options = []
+        mock_factory = _mock_client_factory(
+            _make_assistant_message("Test response"),
+            _make_result_message(session_id="new-session"),
+            capture_options=captured_options,
+        )
+
+        with patch(
+            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
+        ):
+            await sdk_manager.execute_command(
+                prompt="New prompt",
+                working_directory=Path("/test"),
+            )
+
+        assert len(captured_options) == 1
+        assert captured_options[0].model == sdk_manager.config.claude_model
+
+    async def test_execute_command_allows_runtime_claude_model_override(
+        self, sdk_manager
+    ):
+        """Runtime model override should take precedence over configured model."""
+        captured_options = []
+        mock_factory = _mock_client_factory(
+            _make_assistant_message("Test response"),
+            _make_result_message(session_id="new-session"),
+            capture_options=captured_options,
+        )
+
+        with patch(
+            "src.claude.sdk_integration.ClaudeSDKClient", side_effect=mock_factory
+        ):
+            await sdk_manager.execute_command(
+                prompt="New prompt",
+                working_directory=Path("/test"),
+                model="claude-3-5-haiku-20241022",
+            )
+
+        assert len(captured_options) == 1
+        assert captured_options[0].model == "claude-3-5-haiku-20241022"
+
 
 class TestClaudeSandboxSettings:
     """Test sandbox and system_prompt settings on ClaudeAgentOptions."""

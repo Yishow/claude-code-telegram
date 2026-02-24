@@ -46,6 +46,16 @@ from .monitor import _is_claude_internal_path, check_bash_directory_boundary
 
 logger = structlog.get_logger()
 
+CLAUDE_MODELS = [
+    "claude-opus-4-1-20250805",
+    "claude-opus-4-20250514",
+    "claude-sonnet-4-5-20250929",
+    "claude-sonnet-4-20250514",
+    "claude-3-7-sonnet-20250219",
+    "claude-3-5-sonnet-20241022",
+    "claude-3-5-haiku-20241022",
+]
+
 
 def find_claude_cli(claude_cli_path: Optional[str] = None) -> Optional[str]:
     """Find Claude CLI in common locations."""
@@ -227,15 +237,21 @@ class ClaudeSDKManager:
         session_id: Optional[str] = None,
         continue_session: bool = False,
         stream_callback: Optional[Callable[[StreamUpdate], None]] = None,
+        model: Optional[str] = None,
     ) -> ClaudeResponse:
         """Execute Claude Code command via SDK."""
         start_time = asyncio.get_event_loop().time()
+        configured_model = str(getattr(self.config, "claude_model", "") or "").strip()
+        effective_model = (
+            configured_model if model is None else (str(model).strip() or None)
+        )
 
         logger.info(
             "Starting Claude SDK command",
             working_directory=str(working_directory),
             session_id=session_id,
             continue_session=continue_session,
+            model=effective_model,
         )
 
         try:
@@ -265,6 +281,8 @@ class ClaudeSDKManager:
                 ),
                 stderr=_stderr_callback,
             )
+            if effective_model:
+                options.model = effective_model
 
             # Pass MCP server configuration if enabled
             if self.config.enable_mcp and self.config.mcp_config_path:

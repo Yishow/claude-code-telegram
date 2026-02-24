@@ -14,8 +14,10 @@ from ...security.audit import AuditLogger
 from ...security.validators import SecurityValidator
 from ..copilot_control_plane import run_copilot_control_command
 from ..copilot_runtime import (
+    ONCE_CLAUDE_MODEL_KEY,
     ONCE_MODEL_KEY,
     ONCE_PROVIDER_KEY,
+    SESSION_CLAUDE_MODEL_KEY,
     SESSION_MODEL_KEY,
     SESSION_PROVIDER_KEY,
     get_runtime_snapshot,
@@ -1138,11 +1140,53 @@ async def provider_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def model_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handle /model command for Copilot model selection."""
+    """Handle /model command with provider-aware model semantics."""
     from ...claude.copilot_integration import COPILOT_MODELS  # noqa: PLC0415
+    from ...claude.sdk_integration import CLAUDE_MODELS  # noqa: PLC0415
 
     settings: Settings = context.bot_data["settings"]
     args = context.args or []
+    current_provider = str(
+        context.user_data.get(SESSION_PROVIDER_KEY, settings.default_provider)
+    ).lower()
+
+    if current_provider == "claude":
+        if not args:
+            current = context.user_data.get(
+                SESSION_CLAUDE_MODEL_KEY, settings.claude_model
+            )
+            lines = "\n".join(f"  <code>{m}</code>" for m in CLAUDE_MODELS)
+            await update.message.reply_text(
+                f"Current model: <code>{escape_html(str(current))}</code>\n\n"
+                f"<b>Available models:</b>\n{lines}\n\n"
+                "Usage: <code>/model &lt;model_name&gt; [once]</code>",
+                parse_mode="HTML",
+            )
+            return
+
+        requested = args[0].strip()
+        if not requested:
+            await update.message.reply_text(
+                "Please provide a model name.",
+                parse_mode="HTML",
+            )
+            return
+
+        once = len(args) > 1 and args[1].strip().lower() in {"once", "--once", "-o"}
+        if once:
+            context.user_data[ONCE_CLAUDE_MODEL_KEY] = requested
+            msg = (
+                f"Model one-shot override set to "
+                f"<code>{escape_html(requested)}</code> (provider: claude)"
+            )
+        else:
+            context.user_data[SESSION_CLAUDE_MODEL_KEY] = requested
+            msg = (
+                f"Model switched to <code>{escape_html(requested)}</code> "
+                f"(provider: claude)"
+            )
+        await update.message.reply_text(msg, parse_mode="HTML")
+        return
 
     if not args:
         current = context.user_data.get(SESSION_MODEL_KEY, settings.copilot_model)
